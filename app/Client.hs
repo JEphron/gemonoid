@@ -100,9 +100,7 @@ parseLine isPre line
   | isPre = PreLine line
   | line `startsWith` ">" = QuoteLine (munge 1 line)
   | line `startsWith` "=>" =
-    let withoutPrefix = munge 2 line
-        (uri, description) = T.breakOn " " withoutPrefix
-     in LinkLine uri (dropWhitespace description)
+    uncurry LinkLine $ dropWhitespace <$> T.breakOn " " (munge 2 line)
   | line `startsWith` "*" = ULLine (munge 1 line)
   | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
   | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
