@@ -93,21 +93,23 @@ startsWith txt beg = T.take (T.length beg) txt == beg
 
 xor a b = a /= b
 
-parseLinkLine :: Text -> Line
-parseLinkLine text =
-  let withoutPrefix = T.dropWhile Char.isSpace $ T.drop 2 text
-      (uri, description) = T.breakOn " " withoutPrefix
-   in LinkLine uri (T.dropWhile Char.isSpace description)
+dropWhitespace = T.dropWhile Char.isSpace
 
-parseLine :: Text -> Bool -> Line
-parseLine line isPre
+parseLine :: Bool -> Text -> Line
+parseLine isPre line
   | isPre = PreLine line
-  | line `startsWith` "=>" = parseLinkLine line
-  | line `startsWith` "*" = ULLine line
-  | line `startsWith` "###" = HeadingLine H3 line
-  | line `startsWith` "##" = HeadingLine H2 line
-  | line `startsWith` "#" = HeadingLine H1 line
+  | line `startsWith` ">" = QuoteLine (munge 1 line)
+  | line `startsWith` "=>" =
+    let withoutPrefix = munge 2 line
+        (uri, description) = T.breakOn " " withoutPrefix
+     in LinkLine uri (dropWhitespace description)
+  | line `startsWith` "*" = ULLine (munge 1 line)
+  | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
+  | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
+  | line `startsWith` "#" = HeadingLine H1 (munge 1 line)
   | otherwise = TextLine line
+  where
+    munge n = dropWhitespace . T.drop n
 
 parseLines :: [Text] -> [Line]
 parseLines =
@@ -115,7 +117,7 @@ parseLines =
     . foldl
       ( \(lines, isPre) line ->
           let nextIsPre = (line `startsWith` "```") `xor` isPre
-           in (lines ++ [parseLine line (isPre && nextIsPre)], nextIsPre)
+           in (lines ++ [parseLine (isPre && nextIsPre) line], nextIsPre)
       )
       ([], False)
 
@@ -134,7 +136,7 @@ parseResponse text = do
   let lines = T.lines text
   (header, body) <- List.uncons lines
   (status, meta) <- parseMeta header
-  response <- case status of
+  case status of
     (1, _) -> Just $ Input meta
     (2, _) -> do
       mime <- parseMimeType meta
@@ -143,7 +145,6 @@ parseResponse text = do
       uri <- parseURI (T.unpack meta) -- todo: handle relative uris
       Just $ Redirect uri
     other -> Just $ Unknown other meta
-  return response
 
 getRaw :: URI -> IO Text
 getRaw uri =
