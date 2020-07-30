@@ -5,6 +5,7 @@
 module Client where
 
 import qualified Control.Exception as E
+import Control.Monad (join)
 import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.Char as Char
@@ -14,6 +15,7 @@ import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
+import qualified Data.Text.IO as TIO
 import Lens.Micro.Platform
 import Lib
 import qualified Log
@@ -25,6 +27,7 @@ import qualified Network.TLS.SessionManager as TLSSessionManager
 import Network.URI
 import Safe
 import Status
+import qualified System.Console.ANSI as ANSI
 import System.Timeout
 import System.X509 (getSystemCertificateStore)
 
@@ -34,7 +37,7 @@ data HeadingLevel
   = H1
   | H2
   | H3
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Line
   = TextLine Text
@@ -73,11 +76,43 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
-get :: String -> IO (Maybe GeminiResponse)
-get uriString = do
-  response <- parseResponse <$> getRaw (fromJust $ parseURI uriString)
-  putStrLn "---------------- PARSED RESPONSE ---------------"
-  return response
+displayLine :: Line -> IO ()
+displayLine (TextLine t) = TIO.putStrLn t
+displayLine (LinkLine link description) = do
+  ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
+  putStr "("
+  TIO.putStr link
+  putStr "): "
+  TIO.putStr description
+  ANSI.setSGR [ANSI.Reset]
+  TIO.putStr "\n"
+displayLine (PreLine t) = do
+  ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
+  TIO.putStrLn t
+  ANSI.setSGR [ANSI.Reset]
+displayLine (HeadingLine h t) = do
+  ANSI.setSGR
+    ( [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+        ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
+        ++ [ANSI.SetItalicized True | h == H2]
+    )
+  TIO.putStrLn t
+  ANSI.setSGR [ANSI.Reset]
+displayLine (ULLine t) = do
+  ANSI.setSGR [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+  TIO.putStrLn t
+  ANSI.setSGR [ANSI.Reset]
+displayLine it = print it
+
+display :: GeminiResponse -> IO ()
+display (Success (GeminiContent GeminiPage {_lines})) =
+  mapM_ displayLine _lines
+display x = print x
+
+get :: URI -> IO (Maybe GeminiResponse)
+get uri = parseResponse <$> getRaw uri --fromJust $ parseURI uriString
+
+getAndDisplay s = get s >>= mapM_ display
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
@@ -159,13 +194,9 @@ getRaw uri =
 recvAll :: TLS.Context -> IO C.ByteString
 recvAll ctx =
   let timeoutMs = 8000
-
-      recvData :: IO (Either E.SomeException (Maybe C.ByteString))
-      recvData = E.try (timeout (1000 * timeoutMs) $ TLS.recvData ctx)
-
       recvAll' str = do
         Log.info "receving..."
-        resp <- recvData
+        resp <- tryAny (timeout (1000 * timeoutMs) $ TLS.recvData ctx)
         case resp of
           Right (Just "") -> return str
           Right (Just newPart) -> recvAll' (str <> newPart)
@@ -175,11 +206,26 @@ recvAll ctx =
           Left _ -> return str
    in recvAll' ""
 
+rightToJust :: Either l r -> Maybe r
+rightToJust (Right r) = Just r
+rightToJust (Left l) = Nothing
+
+tryAny :: IO a -> IO (Either E.SomeException a)
+tryAny = E.try
+
+safeGetAddrInfo :: Maybe AddrInfo -> Maybe HostName -> Maybe ServiceName -> IO (Maybe [AddrInfo])
+safeGetAddrInfo addrInfo hostName serviceName =
+  (join . rightToJust)
+    <$> ( tryAny
+            . timeout (1000 * 1000)
+            $ getAddrInfo addrInfo hostName serviceName
+        )
+
 runTCPClient :: HostName -> ServiceName -> (Socket -> IO a) -> IO a
 runTCPClient url port fn =
   let resolve = do
         let hints = defaultHints {addrSocketType = Stream}
-        fmap headMay (getAddrInfo (Just hints) (Just url) (Just port))
+        fmap headMay <$> safeGetAddrInfo (Just hints) (Just url) (Just port)
 
       open addr = do
         sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
@@ -187,7 +233,7 @@ runTCPClient url port fn =
         return sock
    in do
         addrMay <- resolve
-        case addrMay of
+        case join addrMay of
           Just addr ->
             E.bracket (open addr) close fn
           Nothing -> error "unable to resolve addr"
