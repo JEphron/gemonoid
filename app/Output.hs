@@ -51,7 +51,8 @@ displayLine (HeadingLine h t) = do
 displayLine (ULLine t) = do
   withStyle ulStyle $ do
     TIO.putStrLn ("• " <> t)
-displayLine it = print it
+displayLine (QuoteLine t) = do
+  TIO.putStrLn ("┆ " <> t)
 
 display :: GeminiResponse -> IO ()
 display (Success (GeminiContent GeminiPage {pageLines})) =
