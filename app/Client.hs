@@ -42,7 +42,7 @@ data HeadingLevel
 
 data Line
   = TextLine Text
-  | LinkLine Text Text
+  | LinkLine Text Text -- url, description
   | PreLine Text
   | HeadingLine HeadingLevel Text
   | ULLine Text
@@ -78,7 +78,7 @@ data GeminiResponse
 newtype GeminiRequest = GeminiRequest URI
 
 linkDescriptionStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Yellow]
+linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow, ANSI.SetUnderlining ANSI.SingleUnderline]
 preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
 hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
         ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
@@ -86,19 +86,19 @@ hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
 ulStyle = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
 
 withStyle :: [ANSI.SGR] -> IO () -> IO ()
-withStyle style f = do
+withStyle style fn = do
   ANSI.setSGR style
-  f
+  fn
   ANSI.setSGR [ANSI.Reset]
 
 displayLine :: Line -> IO ()
 displayLine (TextLine t) = TIO.putStrLn t
-displayLine (LinkLine link description) = do
+displayLine (LinkLine url description) = do
   withStyle linkDescriptionStyle $ do
     TIO.putStr description
   putStr " ("
   withStyle linkUrlStyle $ do
-    TIO.putStr link
+    TIO.putStr url
   putStr ")"
   TIO.putStr "\n"
 displayLine (PreLine t) = withStyle preStyle $ do
@@ -158,7 +158,7 @@ parseLines =
            in (lines ++ [parseLine (isPre && nextIsPre) line], nextIsPre)
       )
       ([], False)
-  where xor a b = a /= b
+  where xor = (/=)
 
 parseGeminiPage :: [Text] -> GeminiPage
 parseGeminiPage = GeminiPage . parseLines
