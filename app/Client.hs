@@ -1,35 +1,36 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE NamedFieldPuns    #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Client where
 
-import qualified Control.Exception as E
-import Control.Monad (join)
-import qualified Data.ByteString.Char8 as C
+import           Control.Category           ((>>>))
+import qualified Control.Exception          as E
+import           Control.Monad              (join)
+import qualified Data.ByteString.Char8      as C
 import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.Char as Char
-import Data.Default.Class (def)
-import qualified Data.List as List
-import Data.Maybe
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
-import qualified Data.Text.IO as TIO
-import Lens.Micro.Platform
-import Lib
+import qualified Data.Char                  as Char
+import           Data.Default.Class         (def)
+import qualified Data.List                  as List
+import           Data.Maybe
+import           Data.Text                  (Text)
+import qualified Data.Text                  as T
+import           Data.Text.Encoding         (decodeUtf8)
+import qualified Data.Text.IO               as TIO
+import           Lens.Micro.Platform
+import           Lib
 import qualified Log
-import Network.Socket
-import Network.Socket.ByteString (recv, sendAll)
-import qualified Network.TLS as TLS
-import Network.TLS.Extra.Cipher (ciphersuite_default)
+import           Network.Socket
+import           Network.Socket.ByteString  (recv, sendAll)
+import qualified Network.TLS                as TLS
+import           Network.TLS.Extra.Cipher   (ciphersuite_default)
 import qualified Network.TLS.SessionManager as TLSSessionManager
-import Network.URI
-import Safe
-import Status
-import qualified System.Console.ANSI as ANSI
-import System.Timeout
-import System.X509 (getSystemCertificateStore)
+import           Network.URI
+import           Safe
+import           Status
+import qualified System.Console.ANSI        as ANSI
+import           System.Timeout
+import           System.X509                (getSystemCertificateStore)
 
 type MimeType = Text
 
@@ -61,7 +62,7 @@ data Content
 
 data FailureInfo = FailureInfo
   { failureReason :: String,
-    permanent :: Bool
+    permanent     :: Bool
   }
   deriving (Show)
 
@@ -76,32 +77,37 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
+linkStyle :: [ANSI.SGR]
+linkStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
+preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
+hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+        ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
+        ++ [ANSI.SetItalicized True | h == H2]
+ulStyle = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+
+withStyle :: [ANSI.SGR] -> IO () -> IO ()
+withStyle style f = do
+  ANSI.setSGR style
+  f
+  ANSI.setSGR [ANSI.Reset]
+
 displayLine :: Line -> IO ()
 displayLine (TextLine t) = TIO.putStrLn t
 displayLine (LinkLine link description) = do
-  ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-  putStr "("
-  TIO.putStr link
-  putStr "): "
-  TIO.putStr description
-  ANSI.setSGR [ANSI.Reset]
+  withStyle linkStyle $ do
+    TIO.putStr description
+    putStr " ("
+    TIO.putStr link
+    putStr ")"
   TIO.putStr "\n"
-displayLine (PreLine t) = do
-  ANSI.setSGR [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
-  TIO.putStrLn t
-  ANSI.setSGR [ANSI.Reset]
+displayLine (PreLine t) = withStyle preStyle $ do
+    TIO.putStrLn t
 displayLine (HeadingLine h t) = do
-  ANSI.setSGR
-    ( [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
-        ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
-        ++ [ANSI.SetItalicized True | h == H2]
-    )
-  TIO.putStrLn t
-  ANSI.setSGR [ANSI.Reset]
+  withStyle (hStyle h) $ do
+    TIO.putStrLn t
 displayLine (ULLine t) = do
-  ANSI.setSGR [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
-  TIO.putStrLn t
-  ANSI.setSGR [ANSI.Reset]
+  withStyle ulStyle $ do
+    TIO.putStrLn t
 displayLine it = print it
 
 display :: GeminiResponse -> IO ()
@@ -126,16 +132,13 @@ parseMeta =
 startsWith :: Text -> Text -> Bool
 startsWith txt beg = T.take (T.length beg) txt == beg
 
-xor a b = a /= b
-
-dropWhitespace = T.dropWhile Char.isSpace
-
 parseLine :: Bool -> Text -> Line
 parseLine isPre line
   | isPre = PreLine line
   | line `startsWith` ">" = QuoteLine (munge 1 line)
   | line `startsWith` "=>" =
-    uncurry LinkLine $ dropWhitespace <$> T.breakOn " " (munge 2 line)
+      let (link, description) = munge 2 line & T.break Char.isSpace
+      in LinkLine link (T.strip description)
   | line `startsWith` "*" = ULLine (munge 1 line)
   | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
   | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
@@ -143,6 +146,7 @@ parseLine isPre line
   | otherwise = TextLine line
   where
     munge n = dropWhitespace . T.drop n
+    dropWhitespace = T.dropWhile Char.isSpace
 
 parseLines :: [Text] -> [Line]
 parseLines =
@@ -153,13 +157,14 @@ parseLines =
            in (lines ++ [parseLine (isPre && nextIsPre) line], nextIsPre)
       )
       ([], False)
+  where xor a b = a /= b
 
 parseGeminiPage :: [Text] -> GeminiPage
 parseGeminiPage = GeminiPage . parseLines
 
 parseSuccess :: MimeType -> [Text] -> Content
 parseSuccess "text/gemini" lines = GeminiContent $ parseGeminiPage lines
-parseSuccess mime lines = UnknownContent mime (T.unlines lines)
+parseSuccess mime lines          = UnknownContent mime (T.unlines lines)
 
 parseMimeType :: Text -> Maybe MimeType
 parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
@@ -208,7 +213,7 @@ recvAll ctx =
 
 rightToJust :: Either l r -> Maybe r
 rightToJust (Right r) = Just r
-rightToJust (Left l) = Nothing
+rightToJust (Left l)  = Nothing
 
 tryAny :: IO a -> IO (Either E.SomeException a)
 tryAny = E.try
