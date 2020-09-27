@@ -78,14 +78,14 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
-maxRetries :: Int
-maxRetries = 4
+maxRedirects :: Int
+maxRedirects = 4
 
 get :: URI -> IO (Maybe GeminiResponse)
-get initialUri = innerGet initialUri maxRetries
+get initialUri = innerGet initialUri maxRedirects
   where
-    innerGet uri remainingRetries =
-      if remainingRetries == 0 then do
+    innerGet uri remainingRedirects =
+      if remainingRedirects == 0 then do
         Log.error "Exceeded max retries!"
         return Nothing
       else do
@@ -93,7 +93,7 @@ get initialUri = innerGet initialUri maxRetries
         case response of
             Just (Redirect newUri) -> do
               Log.warn ("Redirected to " <> (show newUri))
-              innerGet newUri (remainingRetries - 1)
+              innerGet newUri (remainingRedirects - 1)
             other ->
               return other
 
@@ -115,7 +115,7 @@ parseResponse uri text = do
 getRaw :: URI -> IO Text
 getRaw uri =
   let host = fromJust $ uriRegName <$> uriAuthority uri
-   in runTCPClient host "1965" $ \sock ->
+   in runTCPClient host "1965" $ \sock -> -- todo: handle alternative port numbers
         withTLS host sock $ \ctx -> do
           let toSend = LC.pack $ uriToString id uri "\r\n"
           Log.info ("Sending..." <> show toSend)
@@ -143,7 +143,7 @@ parseMimeType :: Text -> Maybe MimeType
 parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
 
 parseGeminiPage :: URI -> [Text] -> GeminiPage
-parseGeminiPage uri = GeminiPage . (parseLines uri)
+parseGeminiPage uri = GeminiPage . parseLines uri
 
 parseURI_T = parseURI . T.unpack
 isRelativeReference_T = isRelativeReference . T.unpack
@@ -220,9 +220,10 @@ safeGetAddrInfo :: Maybe AddrInfo -> Maybe HostName -> Maybe ServiceName -> IO (
 safeGetAddrInfo addrInfo hostName serviceName =
   (join . rightToJust)
     <$> ( tryAny
-            . timeout (1000 * 1000)
+            . timeout oneSecond
             $ getAddrInfo addrInfo hostName serviceName
         )
+  where oneSecond = 1000 * 1000
 
 runTCPClient :: HostName -> ServiceName -> (Socket -> IO a) -> IO a
 runTCPClient url port fn =
