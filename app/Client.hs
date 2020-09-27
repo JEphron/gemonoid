@@ -79,13 +79,19 @@ data GeminiResponse
 newtype GeminiRequest = GeminiRequest URI
 
 get :: URI -> IO (Maybe GeminiResponse)
-get uri = do
-  response <- parseResponse uri <$> getRaw uri
-  case response of
-    Just (Redirect newUri) ->
-      get newUri
-    other ->
-      return other
+get initialUri = innerGet initialUri 4
+  where
+    innerGet uri remainingRetries =
+      if remainingRetries == 0 then do
+        Log.error "Exceeded max retries!"
+        return Nothing
+      else do
+        response <- parseResponse uri <$> getRaw uri
+        case response of
+            Just (Redirect newUri) ->
+              innerGet newUri (remainingRetries - 1)
+            other ->
+              return other
 
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
