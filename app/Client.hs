@@ -4,6 +4,7 @@
 
 module Client where
 
+import           Control.Applicative        (liftA2)
 import           Control.Category           ((>>>))
 import qualified Control.Exception          as E
 import           Control.Monad              (join)
@@ -42,7 +43,7 @@ data HeadingLevel
 
 data Line
   = TextLine Text
-  | LinkLine Text Text -- url, description
+  | LinkLine (Either Text URI) Text -- url, description
   | PreLine Text
   | HeadingLine HeadingLevel Text
   | ULLine Text
@@ -78,59 +79,10 @@ data GeminiResponse
 newtype GeminiRequest = GeminiRequest URI
 
 get :: URI -> IO (Maybe GeminiResponse)
-get uri = parseResponse <$> getRaw uri --fromJust $ parseURI uriString
+get uri = parseResponse uri <$> getRaw uri
 
-parseMeta :: Text -> Maybe ((Int, Int), Text)
-parseMeta =
-  let parseMeta' (s1 : s2 : rest) =
-        let status = (read [s1], read [s2])
-            meta = takeWhile (/= '\r') (dropWhile Char.isSpace rest)
-         in Just (status, T.pack meta)
-      parseMeta' _ = Nothing
-   in parseMeta' . T.unpack -- stupid String
-
-startsWith :: Text -> Text -> Bool
-startsWith txt beg = T.take (T.length beg) txt == beg
-
-parseLine :: Bool -> Text -> Line
-parseLine isPre line
-  | isPre = PreLine line
-  | line `startsWith` ">" = QuoteLine (munge 1 line)
-  | line `startsWith` "=>" =
-      let (link, description) = munge 2 line & T.break Char.isSpace
-      in LinkLine link (T.strip description)
-  | line `startsWith` "*" = ULLine (munge 1 line)
-  | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
-  | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
-  | line `startsWith` "#" = HeadingLine H1 (munge 1 line)
-  | otherwise = TextLine line
-  where
-    munge n = dropWhitespace . T.drop n
-    dropWhitespace = T.dropWhile Char.isSpace
-
-parseLines :: [Text] -> [Line]
-parseLines =
-  fst
-    . foldl
-      ( \(lines, isPre) line ->
-          let nextIsPre = (line `startsWith` "```") `xor` isPre
-           in (lines ++ [parseLine (isPre && nextIsPre) line], nextIsPre)
-      )
-      ([], False)
-  where xor = (/=)
-
-parseGeminiPage :: [Text] -> GeminiPage
-parseGeminiPage = GeminiPage . parseLines
-
-parseSuccess :: MimeType -> [Text] -> Content
-parseSuccess "text/gemini" lines = GeminiContent $ parseGeminiPage lines
-parseSuccess mime lines          = UnknownContent mime (T.unlines lines)
-
-parseMimeType :: Text -> Maybe MimeType
-parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
-
-parseResponse :: Text -> Maybe GeminiResponse
-parseResponse text = do
+parseResponse :: URI -> Text -> Maybe GeminiResponse
+parseResponse uri text = do
   let lines = T.lines text
   (header, body) <- List.uncons lines
   (status, meta) <- parseMeta header
@@ -138,7 +90,7 @@ parseResponse text = do
     (1, _) -> Just $ Input meta
     (2, _) -> do
       mime <- parseMimeType meta
-      Just $ Success $ parseSuccess mime body
+      Just $ Success $ parseSuccess uri mime body
     (3, _) -> do
       uri <- parseURI (T.unpack meta) -- todo: handle relative uris
       Just $ Redirect uri
@@ -155,6 +107,79 @@ getRaw uri =
           response <- recvAll ctx
           C.putStrLn response
           return (decodeUtf8 response)
+
+parseSuccess :: URI -> MimeType -> [Text] -> Content
+parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
+parseSuccess uri mime lines          = UnknownContent mime (T.unlines lines)
+
+parseMeta :: Text -> Maybe ((Int, Int), Text)
+parseMeta =
+  let parseMeta' (s1 : s2 : rest) =
+        let status = (read [s1], read [s2])
+            meta = takeWhile (/= '\r') (dropWhile Char.isSpace rest)
+         in Just (status, T.pack meta)
+      parseMeta' _ = Nothing
+   in parseMeta' . T.unpack -- stupid String
+
+startsWith :: Text -> Text -> Bool
+startsWith txt beg = T.take (T.length beg) txt == beg
+
+parseMimeType :: Text -> Maybe MimeType
+parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
+
+parseGeminiPage :: URI -> [Text] -> GeminiPage
+parseGeminiPage uri = GeminiPage . (parseLines uri)
+
+parseURI_T = parseURI . T.unpack
+isRelativeReference_T = isRelativeReference . T.unpack
+isAbsoluteURI_T = isAbsoluteURI . T.unpack
+parseRelativeReference_T = parseRelativeReference . T.unpack
+
+calcUri :: Text -> URI -> Maybe URI
+calcUri incomingUriStr currentUri
+  | isRelativeReference_T incomingUriStr =
+      liftA2 relativeTo
+      (parseRelativeReference_T incomingUriStr)
+      (pure currentUri)
+  | isAbsoluteURI_T incomingUriStr = parseURI_T incomingUriStr
+
+maybeToEither :: Maybe a -> e -> Either e a
+maybeToEither (Just a) _ = Right a
+maybeToEither Nothing e  = Left e
+
+parseLine :: URI -> Bool -> Text -> Line
+parseLine currentUri isPre line
+  | isPre = PreLine line
+  | line `startsWith` ">" = QuoteLine (munge 1 line)
+  | line `startsWith` "=>" =
+      let (uriStr, description) = munge 2 line & T.break Char.isSpace
+          uri = calcUri uriStr currentUri
+      in LinkLine (maybeToEither uri uriStr) (T.strip description)
+  | line `startsWith` "*" = ULLine (munge 1 line)
+  | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
+  | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
+  | line `startsWith` "#" = HeadingLine H1 (munge 1 line)
+  | otherwise = TextLine line
+  where
+    munge n = dropWhitespace . T.drop n
+    dropWhitespace = T.dropWhile Char.isSpace
+
+parseLines :: URI -> [Text] -> [Line]
+parseLines uri =
+  fst
+    . foldl
+      ( \(lines, isPre) line ->
+          let nextIsPre = (line `startsWith` "```") `xor` isPre
+              aboutToChange = (nextIsPre && not isPre) || (isPre && not nextIsPre)
+           in if aboutToChange then
+                -- skip
+                (lines, nextIsPre)
+              else
+                (lines ++ [parseLine uri (isPre && nextIsPre) line], nextIsPre)
+      )
+      ([], False)
+  where xor = (/=)
+
 
 recvAll :: TLS.Context -> IO C.ByteString
 recvAll ctx =

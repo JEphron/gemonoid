@@ -13,7 +13,8 @@ import qualified System.Console.ANSI as ANSI
 
 
 linkDescriptionStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow, ANSI.SetUnderlining ANSI.SingleUnderline]
+linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow,
+                ANSI.SetUnderlining ANSI.SingleUnderline]
 preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
 hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
         ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
@@ -29,12 +30,17 @@ withStyle style fn = do
 
 displayLine :: Line -> IO ()
 displayLine (TextLine t) = TIO.putStrLn t
-displayLine (LinkLine url description) = do
+displayLine (LinkLine uriOrStr description) = do
   withStyle linkDescriptionStyle $ do
     TIO.putStr description
   putStr " ("
   withStyle linkUrlStyle $ do
-    TIO.putStr url
+    case uriOrStr of
+      Right uri ->
+        putStr $ URI.uriToString id uri ""
+      Left str -> do
+        TIO.putStr "<parse failed!> "
+        TIO.putStr str
   putStr ")"
   TIO.putStr "\n"
 displayLine (PreLine t) = withStyle preStyle $ do
@@ -50,10 +56,11 @@ displayLine it = print it
 display :: GeminiResponse -> IO ()
 display (Success (GeminiContent GeminiPage {pageLines})) =
   mapM_ displayLine pageLines
-display x = print x
+display x =
+  print x
 
 getAndDisplay :: String -> IO ()
-getAndDisplay string = case URI.parseURI string of
-  Just uri -> Client.get uri >>= mapM_ display
-  Nothing  -> withStyle errorStyle $
-    TIO.putStrLn "error, invalid URI"
+getAndDisplay string =
+  case URI.parseURI string of
+    Just uri -> Client.get uri >>= mapM_ display
+    Nothing  -> withStyle errorStyle $ TIO.putStrLn "error, invalid URI"
