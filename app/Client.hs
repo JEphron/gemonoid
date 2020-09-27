@@ -49,11 +49,11 @@ data Line
   | QuoteLine Text
   deriving (Show)
 
-newtype GeminiPage = GeminiPage {_lines :: [Line]}
+newtype GeminiPage = GeminiPage {pageLines :: [Line]}
 
 instance Show GeminiPage where
-  show GeminiPage {_lines} =
-    "\n" ++ List.intercalate "\n" (map show _lines)
+  show GeminiPage {pageLines} =
+    "\n" ++ List.intercalate "\n" (map show pageLines)
 
 data Content
   = GeminiContent GeminiPage
@@ -77,49 +77,8 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
-linkDescriptionStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow, ANSI.SetUnderlining ANSI.SingleUnderline]
-preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
-hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
-        ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
-        ++ [ANSI.SetItalicized True | h == H2]
-ulStyle = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
-
-withStyle :: [ANSI.SGR] -> IO () -> IO ()
-withStyle style fn = do
-  ANSI.setSGR style
-  fn
-  ANSI.setSGR [ANSI.Reset]
-
-displayLine :: Line -> IO ()
-displayLine (TextLine t) = TIO.putStrLn t
-displayLine (LinkLine url description) = do
-  withStyle linkDescriptionStyle $ do
-    TIO.putStr description
-  putStr " ("
-  withStyle linkUrlStyle $ do
-    TIO.putStr url
-  putStr ")"
-  TIO.putStr "\n"
-displayLine (PreLine t) = withStyle preStyle $ do
-    TIO.putStrLn t
-displayLine (HeadingLine h t) = do
-  withStyle (hStyle h) $ do
-    TIO.putStrLn t
-displayLine (ULLine t) = do
-  withStyle ulStyle $ do
-    TIO.putStrLn ("• " <> t)
-displayLine it = print it
-
-display :: GeminiResponse -> IO ()
-display (Success (GeminiContent GeminiPage {_lines})) =
-  mapM_ displayLine _lines
-display x = print x
-
 get :: URI -> IO (Maybe GeminiResponse)
 get uri = parseResponse <$> getRaw uri --fromJust $ parseURI uriString
-
-getAndDisplay s = get s >>= mapM_ display
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
