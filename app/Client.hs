@@ -79,7 +79,14 @@ data GeminiResponse
 newtype GeminiRequest = GeminiRequest URI
 
 get :: URI -> IO (Maybe GeminiResponse)
-get uri = parseResponse uri <$> getRaw uri
+get uri = do
+  response <- parseResponse uri <$> getRaw uri
+  case response of
+    Just (Redirect newUri) ->
+      get newUri
+    other ->
+      return other
+
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
@@ -92,7 +99,7 @@ parseResponse uri text = do
       mime <- parseMimeType meta
       Just $ Success $ parseSuccess uri mime body
     (3, _) -> do
-      uri <- parseURI (T.unpack meta) -- todo: handle relative uris
+      uri <- parseURI (T.unpack meta)
       Just $ Redirect uri
     other -> Just $ Unknown other meta
 
@@ -172,8 +179,7 @@ parseLines uri =
           let nextIsPre = (line `startsWith` "```") `xor` isPre
               aboutToChange = (nextIsPre && not isPre) || (isPre && not nextIsPre)
            in if aboutToChange then
-                -- skip
-                (lines, nextIsPre)
+                (lines, nextIsPre) -- skip
               else
                 (lines ++ [parseLine uri (isPre && nextIsPre) line], nextIsPre)
       )
