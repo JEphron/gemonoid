@@ -77,8 +77,8 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
-linkStyle :: [ANSI.SGR]
-linkStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
+linkDescriptionStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
+linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Yellow]
 preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
 hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
         ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
@@ -94,11 +94,12 @@ withStyle style f = do
 displayLine :: Line -> IO ()
 displayLine (TextLine t) = TIO.putStrLn t
 displayLine (LinkLine link description) = do
-  withStyle linkStyle $ do
+  withStyle linkDescriptionStyle $ do
     TIO.putStr description
-    putStr " ("
+  putStr " ("
+  withStyle linkUrlStyle $ do
     TIO.putStr link
-    putStr ")"
+  putStr ")"
   TIO.putStr "\n"
 displayLine (PreLine t) = withStyle preStyle $ do
     TIO.putStrLn t
@@ -107,7 +108,7 @@ displayLine (HeadingLine h t) = do
     TIO.putStrLn t
 displayLine (ULLine t) = do
   withStyle ulStyle $ do
-    TIO.putStrLn t
+    TIO.putStrLn ("• " <> t)
 displayLine it = print it
 
 display :: GeminiResponse -> IO ()
