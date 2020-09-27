@@ -1,6 +1,6 @@
 module Log where
 
-import System.Console.ANSI
+import           System.Console.ANSI
 
 logf :: [SGR] -> String -> IO ()
 logf sgr str = do
@@ -16,3 +16,6 @@ info = logf [SetColor Foreground Vivid Blue]
 
 error :: String -> IO ()
 error = logf [SetColor Foreground Vivid Red]
+
+warn :: String -> IO ()
+warn = logf [SetColor Foreground Vivid Yellow]

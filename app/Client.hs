@@ -78,8 +78,11 @@ data GeminiResponse
 
 newtype GeminiRequest = GeminiRequest URI
 
+maxRetries :: Int
+maxRetries = 4
+
 get :: URI -> IO (Maybe GeminiResponse)
-get initialUri = innerGet initialUri 4
+get initialUri = innerGet initialUri maxRetries
   where
     innerGet uri remainingRetries =
       if remainingRetries == 0 then do
@@ -88,11 +91,11 @@ get initialUri = innerGet initialUri 4
       else do
         response <- parseResponse uri <$> getRaw uri
         case response of
-            Just (Redirect newUri) ->
+            Just (Redirect newUri) -> do
+              Log.warn ("Redirected to " <> (show newUri))
               innerGet newUri (remainingRetries - 1)
             other ->
               return other
-
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
@@ -118,7 +121,6 @@ getRaw uri =
           Log.info ("Sending..." <> show toSend)
           TLS.sendData ctx toSend
           response <- recvAll ctx
-          C.putStrLn response
           return (decodeUtf8 response)
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
@@ -197,7 +199,6 @@ recvAll :: TLS.Context -> IO C.ByteString
 recvAll ctx =
   let timeoutMs = 8000
       recvAll' str = do
-        Log.info "receving..."
         resp <- tryAny (timeout (1000 * timeoutMs) $ TLS.recvData ctx)
         case resp of
           Right (Just "") -> return str
