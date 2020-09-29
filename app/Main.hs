@@ -39,21 +39,24 @@ type Event = ()
 
 app :: App State Event Name
 app = App { appDraw = drawUI
-          , appChooseCursor = neverShowCursor
+          , appChooseCursor = \_ -> showCursorNamed UrlEdit
           , appHandleEvent = handleEvent
           , appStartEvent = return
           , appAttrMap = const myAttrMap
           }
+
 myAttrMap :: AttrMap
 myAttrMap = attrMap V.defAttr []
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
-handleEvent s (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl]))  = liftIO (doFetch s) >>= continue
+handleEvent s (VtyEvent (V.EvKey (V.KEnter) [])) = liftIO (doFetch s) >>= continue
 handleEvent s (VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl])) = halt s
-handleEvent s (VtyEvent ev) = Editor.handleEditorEvent ev (_urlEditor s) >>= (\it -> continue $ s {_urlEditor = it})
+handleEvent s (VtyEvent ev) =
+  Editor.handleEditorEvent ev (_urlEditor s) >>= (\it -> continue $ s {_urlEditor = it})
 
 doFetch :: State -> IO State
 doFetch s = do
+  -- TODO: do this asynchronously
   let editContents = head $ Editor.getEditContents $ _urlEditor s
   case URI.parseURI editContents of
     Just uri ->
@@ -62,33 +65,28 @@ doFetch s = do
       return s
 
 responseToState :: State -> Maybe Client.GeminiResponse -> State
-responseToState s (Just geminiResponse) = s { _geminiContent = Loaded geminiResponse }
+responseToState s (Just geminiResponse@(Client.GeminiResponse uri _)) =
+  s { _geminiContent = Loaded geminiResponse, _currentURI = Just uri}
 responseToState s Nothing = s
 
 drawUI :: State -> [Widget Name]
 drawUI s =
   [
     C.center $ B.border $
-      vBox [urlEditor, B.hBorder, outputVp, B.hBorder, statusLine]
+      vBox [urlEditor, B.hBorder, outputVp, B.hBorder, drawStatusLine s]
   ]
   where urlEditor = (Editor.renderEditor (str . unlines) True (_urlEditor s))
-        statusLine = str "status!"
         outputVp = viewport ContentVP Vertical $ str (debugGeminiContent s)
-   -- [ (str "the current gemini content is: "
-   --   <=>
-   --   (str "the current URI is: " <+> str (debugUri s))
-   --   <=>
-   --
-   --   <=>
-   --   (str "Ctrl+c to quit, Ctrl+o to enter URL")
-   -- ]
 
-
+drawStatusLine :: State -> Widget Name
+drawStatusLine s = padRight Max status <+> help
+  where status = case _currentURI s of
+          Just uri -> str ("Currently at " <> show uri)
+          Nothing  -> str "Nowhere ;("
+        help = str "(Ctrl+c to quit)"
 debugGeminiContent :: State -> String
 debugGeminiContent s = _geminiContent s & show
 
-debugUri :: State -> String
-debugUri s =  _currentURI s & show
 
 initState :: State
 initState = State

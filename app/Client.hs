@@ -67,13 +67,17 @@ data FailureInfo = FailureInfo
   }
   deriving (Show)
 
-data GeminiResponse
+data GeminiInnerResponse
   = Input Text -- prompt
   | Success Content
   | Redirect URI
   | Failure FailureInfo
   | CertRequest
   | Unknown (Int, Int) Text
+  deriving (Show)
+
+data GeminiResponse =
+  GeminiResponse URI GeminiInnerResponse
   deriving (Show)
 
 newtype GeminiRequest = GeminiRequest URI
@@ -91,7 +95,7 @@ get initialUri = innerGet initialUri maxRedirects
       else do
         response <- parseResponse uri <$> getRaw uri
         case response of
-            Just (Redirect newUri) -> do
+            Just (GeminiResponse _ (Redirect newUri)) -> do
               Log.warn ("Redirected to " <> (show newUri))
               innerGet newUri (remainingRedirects - 1)
             other ->
@@ -100,17 +104,18 @@ get initialUri = innerGet initialUri maxRedirects
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
   let lines = T.lines text
+  let mkResp d = Just $ GeminiResponse uri d
   (header, body) <- List.uncons lines
   (status, meta) <- parseMeta header
   case status of
-    (1, _) -> Just $ Input meta
+    (1, _) -> mkResp $ Input meta
     (2, _) -> do
       mime <- parseMimeType meta
-      Just $ Success $ parseSuccess uri mime body
+      mkResp $ Success $ parseSuccess uri mime body
     (3, _) -> do
       uri <- parseURI (T.unpack meta)
-      Just $ Redirect uri
-    other -> Just $ Unknown other meta
+      mkResp $ Redirect uri
+    other -> mkResp $ Unknown other meta
 
 getRaw :: URI -> IO Text
 getRaw uri =
@@ -165,7 +170,7 @@ maybeToEither Nothing e  = Left e
 parseLine :: URI -> Bool -> Text -> Line
 parseLine currentUri isPre line
   | isPre = PreLine line
-  | line `startsWith` ">" = QuoteLine $ munge 1 line
+  | line `startsWith` ">" = QuoteLine (munge 1 line)
   | line `startsWith` "=>" =
       let (uriStr, description) = munge 2 line & T.break Char.isSpace
           uri = calcUri uriStr currentUri

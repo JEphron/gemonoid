@@ -55,7 +55,7 @@ displayLine (QuoteLine t) = do
   TIO.putStrLn ("┆ " <> t)
 
 display :: GeminiResponse -> IO ()
-display (Success (GeminiContent GeminiPage {pageLines})) =
+display (GeminiResponse _ (Success (GeminiContent GeminiPage {pageLines}))) =
   mapM_ displayLine pageLines
 display x =
   print x
