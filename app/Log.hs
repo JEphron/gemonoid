@@ -5,7 +5,7 @@ import           System.Console.ANSI
 logf :: [SGR] -> String -> IO ()
 logf sgr str = do
   setSGR sgr
-  putStrLn str
+  -- putStrLn str
   setSGR [Reset]
 
 success :: String -> IO ()

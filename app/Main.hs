@@ -4,12 +4,12 @@
 
 module Main where
 
-import           Brick                  (App (..), AttrMap, BrickEvent (..),
-                                         EventM, Next, Widget, (<+>), (<=>))
+import           Brick
 import qualified Brick
 import qualified Brick.Main             as Brick
 import           Brick.Util             (on)
-import qualified Brick.Widgets.Center   as Center
+import qualified Brick.Widgets.Border   as B
+import qualified Brick.Widgets.Center   as C
 import qualified Brick.Widgets.Dialog   as Dialog
 import           Brick.Widgets.Edit     (Editor)
 import qualified Brick.Widgets.Edit     as Editor
@@ -19,124 +19,87 @@ import           Control.Monad.IO.Class (liftIO)
 import           Data.Maybe             (isNothing)
 import           Data.Text              (Text)
 import qualified Data.Text              as T
-import qualified Graphics.Vty           as Vty
+import qualified Graphics.Vty           as V
 import           Lens.Micro.Platform
+import           Network.URI            (URI)
 import qualified Network.URI            as URI
 import qualified Output
 
-{-
-TODO:
-* ability to have a persistent session
-* navigatable links
-* fix certificate handling: don't use system trust anchors
-* handle response codes properly
--}
-
-data Loadable e a = NotStarted | Loading | Loaded a | Failed e deriving (Show)
-
-data Name = URLEditor deriving (Eq, Ord, Show)
-
-type Event = ()
-
-data UrlBarState = UrlBarState
-  { _active      :: Bool,
-    _editorState :: Editor String Name
-  }
-  deriving (Show)
-
-type Session = ()
+data Loadable a = NotStarted | Loading | Loaded a deriving (Show)
 
 data State = State
-  { _session     :: Session,
-    _urlBarState :: UrlBarState,
-    _geminiPage  :: Loadable String Client.GeminiResponse
-  }
-  deriving (Show)
+  { _currentURI    :: Maybe URI
+  , _geminiContent :: Loadable Client.GeminiResponse
+  , _urlEditor     :: Editor String Name
+  , _logs          :: [String]
+  } deriving (Show)
 
-makeLenses ''State
-makeLenses ''UrlBarState
-
-initState :: State
-initState =
-  State
-    { _session = (),
-      _urlBarState = initEnterUrl,
-      _geminiPage = NotStarted
-    }
-
-initEnterUrl :: UrlBarState
-initEnterUrl =
-  UrlBarState
-    { _active = False,
-      _editorState = Editor.editor URLEditor (Just 1) ""
-    }
+data Name = UrlEdit | ContentVP deriving (Show, Eq, Ord)
+type Event = ()
 
 app :: App State Event Name
-app =
-  App
-    { appDraw = drawUI,
-      appHandleEvent = handleEvent,
-      appChooseCursor = Brick.showFirstCursor,
-      appStartEvent = return,
-      appAttrMap = const attrMap
-    }
-
-attrMap :: AttrMap
-attrMap =
-  Brick.attrMap
-    Vty.defAttr
-    [ (Editor.editAttr, Vty.white `on` Vty.blue),
-      (Editor.editFocusedAttr, Vty.black `on` Vty.yellow)
-    ]
-
-drawUI :: State -> [Widget Name]
-drawUI state =
-  let urlInput = Editor.renderEditor (Brick.str . unlines) True (state ^. urlBarState . editorState)
-   in [ Brick.str "Pollux"
-          <=> (Brick.str "enter url: " <+> urlInput)
-          -- <=> maybe (Brick.str "No error yet...") Brick.str (subState ^. ssError)
-      ]
+app = App { appDraw = drawUI
+          , appChooseCursor = neverShowCursor
+          , appHandleEvent = handleEvent
+          , appStartEvent = return
+          , appAttrMap = const myAttrMap
+          }
+myAttrMap :: AttrMap
+myAttrMap = attrMap V.defAttr []
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
-handleEvent state ev@(VtyEvent event) =
-  withQuitHandler state event $
-    ( case event of
-        Vty.EvKey someKey someMod ->
-          if state ^. urlBarState . active
-            then handleUrlbar state event
-            else handlePageEvents state event
-    )
+handleEvent s (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl]))  = liftIO (doFetch s) >>= continue
+handleEvent s (VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl])) = halt s
+handleEvent s (VtyEvent ev) = Editor.handleEditorEvent ev (_urlEditor s) >>= (\it -> continue $ s {_urlEditor = it})
 
-handlePageEvents :: State -> Vty.Event -> EventM Name (Next State)
-handlePageEvents = undefined
+doFetch :: State -> IO State
+doFetch s = do
+  let editContents = head $ Editor.getEditContents $ _urlEditor s
+  case URI.parseURI editContents of
+    Just uri ->
+      responseToState s <$> Client.get uri
+    Nothing ->
+      return s
 
-handleUrlbar :: State -> Vty.Event -> EventM Name (Next State)
-handleUrlbar state event =
-  case event of
-    Vty.EvKey Vty.KEnter [] ->
-      Brick.continue $ set (urlBarState . active) False state
-    Vty.EvKey someKey someMod -> do
-      newEditorState <- Editor.handleEditorEvent event (view (urlBarState . editorState) state)
-      Brick.continue $ set (urlBarState . editorState) newEditorState state
+responseToState :: State -> Maybe Client.GeminiResponse -> State
+responseToState s (Just geminiResponse) = s { _geminiContent = Loaded geminiResponse }
+responseToState s Nothing = s
 
-withQuitHandler :: State -> Vty.Event -> EventM Name (Next State) -> EventM Name (Next State)
-withQuitHandler state (Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl]) _ = Brick.halt state
-withQuitHandler _ _ f = f
+drawUI :: State -> [Widget Name]
+drawUI s =
+  [
+    C.center $ B.border $
+      vBox [urlEditor, B.hBorder, outputVp, B.hBorder, statusLine]
+  ]
+  where urlEditor = (Editor.renderEditor (str . unlines) True (_urlEditor s))
+        statusLine = str "status!"
+        outputVp = viewport ContentVP Vertical $ str (debugGeminiContent s)
+   -- [ (str "the current gemini content is: "
+   --   <=>
+   --   (str "the current URI is: " <+> str (debugUri s))
+   --   <=>
+   --
+   --   <=>
+   --   (str "Ctrl+c to quit, Ctrl+o to enter URL")
+   -- ]
 
--- doFetchGeminiStuff = do
---   let editContents = T.unpack $ T.strip $ T.unlines $ Editor.getEditContents $ subState ^. ssUrlEdit
---   newSubState <- case URI.parseURI editContents of
---     Just uri -> do
---       geminiResponseMay <- liftIO $ Client.get uri
---       case geminiResponseMay of
---         Just geminiResponse ->
---           return $ subState & ssError .~ Nothing
---         Nothing ->
---           return $ subState & ssError ?~ "bad response"
---     Nothing ->
---       return $ subState & ssError ?~ ("bad uri: '" <> editContents <> "'")
 
---Brick.continue (state & stSubState ssUrlEdit)
+debugGeminiContent :: State -> String
+debugGeminiContent s = _geminiContent s & show
+
+debugUri :: State -> String
+debugUri s =  _currentURI s & show
+
+initState :: State
+initState = State
+  { _currentURI = Nothing
+  , _geminiContent = NotStarted
+  , _urlEditor = Editor.editor UrlEdit (Just 1) "gemini://gemini.circumlunar.space/"
+  , _logs = []
+  }
 
 main :: IO ()
-main = void $ Brick.defaultMain app initState
+main = do
+  let buildVty = V.mkVty V.defaultConfig
+  initialVty <- buildVty
+  void $ customMain initialVty buildVty Nothing app initState

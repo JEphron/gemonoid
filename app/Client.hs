@@ -165,7 +165,7 @@ maybeToEither Nothing e  = Left e
 parseLine :: URI -> Bool -> Text -> Line
 parseLine currentUri isPre line
   | isPre = PreLine line
-  | line `startsWith` ">" = QuoteLine (munge 1 line)
+  | line `startsWith` ">" = QuoteLine $ munge 1 line
   | line `startsWith` "=>" =
       let (uriStr, description) = munge 2 line & T.break Char.isSpace
           uri = calcUri uriStr currentUri
