@@ -94,13 +94,20 @@ get initialUri = innerGet initialUri maxRedirects
         Log.error "Exceeded max retries!"
         return Nothing
       else do
-        response <- parseResponse uri <$> getRaw uri
-        case response of
-            Just (GeminiResponse _ (Redirect newUri)) -> do
-              Log.warn ("Redirected to " <> (show newUri))
-              innerGet newUri (remainingRedirects - 1)
-            other ->
-              return other
+        exceptionOrResponse <- tryAny (getRaw uri)
+        case exceptionOrResponse of
+          Left exc ->
+            return (Just $ failure uri ("unknown failure: " <> show exc))
+          Right response ->
+            case parseResponse uri response of
+                Just (GeminiResponse _ (Redirect newUri)) -> do
+                    Log.warn ("Redirected to " <> (show newUri))
+                    innerGet newUri (remainingRedirects - 1)
+                other ->
+                  return other
+failure :: URI -> String -> GeminiResponse
+failure uri str =
+  GeminiResponse uri $ Failure $ FailureInfo {failureReason=str, permanent=False}
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
