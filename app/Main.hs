@@ -106,18 +106,22 @@ responseToState s geminiResponse@(Client.GeminiResponse uri _) =
     s & geminiContent .~ Loaded geminiResponse
       & currentURI ?~ uri
 
+
 drawUI :: State -> [Widget Name]
 drawUI s =
   let
+    hasFocus a b =
+      a == Just b
+
     focus =
       Focus.focusGetCurrent $ s ^. focusRing
 
     drawUrlEditor =
-      Editor.renderEditor (str . unlines) (focus == (Just UrlEdit)) (s ^. urlEditor)
+      Editor.renderEditor (str . unlines) (hasFocus focus UrlEdit) (s ^. urlEditor)
 
     outputViewport =
-      viewport ContentViewport Vertical $
-      s ^. geminiContent & drawLoadable (drawGeminiContent (focus == Just ContentViewport))
+      viewport ContentViewport Vertical $ s ^. geminiContent
+        & drawLoadable (drawGeminiContent (hasFocus focus ContentViewport))
   in
     [ center $ border $
        vBox [ drawUrlEditor
