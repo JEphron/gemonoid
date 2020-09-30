@@ -71,8 +71,11 @@ myAttrMap = attrMap V.defAttr [ ("geminiH1", fg white `withStyle` bold `withStyl
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
 handleEvent s (VtyEvent e) =
   let
-    focus = Focus.focusGetCurrent $ s ^. focusRing
-    cycleFocus = continue $ s & focusRing %~ Focus.focusNext
+    focus =
+      Focus.focusGetCurrent $ s ^. focusRing
+
+    cycleFocus =
+      continue $ s & focusRing %~ Focus.focusNext
   in
     case (focus, e) of
       ((Just UrlEdit), (V.EvKey (V.KEnter) [])) ->
@@ -94,6 +97,7 @@ doFetch s = do
   case URI.parseURI editContents of
     Just uri -> do
       maybe s (responseToState s) <$> Client.get uri
+
     Nothing ->
       return s
 
@@ -107,8 +111,10 @@ drawUI s =
   let
     focus =
       Focus.focusGetCurrent $ s ^. focusRing
+
     drawUrlEditor =
       Editor.renderEditor (str . unlines) (focus == (Just UrlEdit)) (s ^. urlEditor)
+
     outputViewport =
       viewport ContentViewport Vertical $
       s ^. geminiContent & drawLoadable (drawGeminiContent (focus == Just ContentViewport))
@@ -132,8 +138,12 @@ drawLoadable draw loadable =
 drawGeminiContent :: Bool -> GeminiResponse -> Widget Name
 drawGeminiContent focused response =
   case response of
-    GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines})) ->
-      vBox $ map displayLine pageLines
+    GeminiResponse uri (Success content) ->
+      let
+        GeminiContent GeminiPage {pageLines} =
+          content
+      in
+        vBox $ map displayLine pageLines
     GeminiResponse uri resp ->
       str $ show resp
 
@@ -151,20 +161,39 @@ displayLine line =
 
 displayLink :: Either Text URI -> Text -> Widget Name
 displayLink uriOrErr desc =
-  txt desc <+> str " " <+> uriBit
-  where uriBit = case uriOrErr of
-                    Right uri -> str "(" <+> (showUri uri) <+> str ")"
-                    Left  foo -> txt ("<URI parse failed!> - " <> foo)
-        uriToTxt uri = T.pack $ URI.uriToString id uri ""
-        showUri uri = modifyDefAttr (`withURL` (uriToTxt uri)) $
-                         withAttr "geminiUri" $ txt (uriToTxt uri)
+  let
+    uriBit =
+      case uriOrErr of
+          Right uri ->
+            str "(" <+> (showUri uri) <+> str ")"
+
+          Left  foo ->
+            txt ("<URI parse failed!> - " <> foo)
+
+    uriToTxt uri =
+      T.pack $ URI.uriToString id uri ""
+
+    showUri uri =
+      modifyDefAttr (`withURL` (uriToTxt uri))
+        $ withAttr "geminiUri" $ txt (uriToTxt uri)
+  in
+    txt desc <+> str " " <+> uriBit
 
 drawStatusLine :: State -> Widget Name
-drawStatusLine s = padRight Max status <+> help
-  where status = case _currentURI s of
-          Just uri -> str ("Currently at " <> show uri)
-          Nothing  -> str "Nowhere ;("
-        help = str "(Ctrl+c to quit)"
+drawStatusLine s =
+  let
+    status =
+      case _currentURI s of
+          Just uri ->
+            str ("Currently at " <> show uri)
+
+          Nothing  ->
+            str "Nowhere ;("
+
+    help =
+      str "(Ctrl+c to quit)"
+  in
+    padRight Max status <+> help
 
 debugGeminiContent :: State -> String
 debugGeminiContent s =
