@@ -16,6 +16,7 @@ import           Brick.Widgets.Center
 import qualified Brick.Widgets.Dialog   as Dialog
 import           Brick.Widgets.Edit     (Editor)
 import qualified Brick.Widgets.Edit     as Editor
+import qualified Brick.Widgets.List     as BrickList
 import           Client
 import           Control.Applicative    (liftA2)
 import           Control.Monad          (guard, join, void)
@@ -23,6 +24,7 @@ import           Control.Monad.IO.Class (liftIO)
 import           Data.Maybe             (isNothing)
 import           Data.Text              (Text)
 import qualified Data.Text              as T
+import qualified Data.Vector            as Vector
 import           Graphics.Vty           (Attr, black, blue, bold, cyan, green,
                                          red, standout, underline, white,
                                          withStyle, withURL, yellow)
@@ -32,7 +34,7 @@ import           Network.URI            (URI)
 import qualified Network.URI            as URI
 import qualified Output
 
-data Loadable a = NotStarted | Loading | Loaded a deriving (Show)
+data Loadable a = NotStarted | Loading | Loaded a deriving (Show, Eq)
 
 data State = State
   { _currentURI    :: Maybe URI
@@ -40,12 +42,14 @@ data State = State
   , _urlEditor     :: Editor String Name
   , _logs          :: [String]
   , _focusRing     :: Focus.FocusRing Name
+  , _contentList   :: BrickList.List Name Line
+  , _history       :: Vector.Vector URI
   } deriving (Show)
 
 instance Show (Focus.FocusRing n) where
   show f = "<focus ring>"
 
-data Name = UrlEdit | ContentViewport deriving (Show, Eq, Ord)
+data Name = UrlEdit | ContentViewport | ContentList deriving (Show, Eq, Ord)
 type Event = ()
 
 makeLenses ''State
@@ -59,13 +63,15 @@ app = App { appDraw = drawUI
           }
 
 myAttrMap :: AttrMap
-myAttrMap = attrMap V.defAttr [ ("geminiH1", fg white `withStyle` bold `withStyle` underline)
-                              , ("geminiH2", fg white `withStyle` underline)
-                              , ("geminiH3", fg white `withStyle` bold)
-                              , ("geminiQuote", fg white)
+myAttrMap = attrMap V.defAttr [ (BrickList.listSelectedAttr, V.black `on` V.white)
+                              , ("geminiH1", V.currentAttr `withStyle` bold `withStyle` underline)
+                              , ("geminiH2", V.currentAttr `withStyle` underline)
+                              , ("geminiH3", V.currentAttr `withStyle` bold)
                               , ("geminiUri", fg yellow)
                               , ("geminiPre", fg blue)
-                              , ("geminiUl", fg white)
+                              -- , ("geminiQuote", fg white)
+                              -- , ("geminiUl", fg white)
+                              -- , (BrickList.listAttr, V.red `on` V.black)
                               ]
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
@@ -78,8 +84,16 @@ handleEvent s (VtyEvent e) =
       continue $ s & focusRing %~ Focus.focusNext
   in
     case (focus, e) of
-      ((Just UrlEdit), (V.EvKey (V.KEnter) [])) ->
-        liftIO (doFetch s) >>= continue
+      ((Just UrlEdit), (V.EvKey V.KEnter [])) ->
+        let
+          editContents =
+            s ^. urlEditor & Editor.getEditContents & head
+        in
+          case URI.parseURI editContents of
+            Just uri -> do
+              liftIO (doFetch uri s) >>= continue
+            Nothing ->
+              continue s
       (_, (V.EvKey (V.KChar '\t') [])) ->
         cycleFocus
       (_, (V.EvKey (V.KChar 'c') [V.MCtrl])) ->
@@ -87,25 +101,38 @@ handleEvent s (VtyEvent e) =
       ((Just UrlEdit), ev) -> do
         newState <- Editor.handleEditorEvent e (s ^. urlEditor)
         continue $ set urlEditor newState s
+      ((Just ContentViewport), (V.EvKey V.KBS [])) -> do
+        continue s
+      ((Just ContentViewport), (V.EvKey V.KEnter [])) -> do
+        let selection = s ^. contentList & BrickList.listSelectedElement
+        case selection of
+          Just (n, LinkLine (Right uri) desc) ->
+            liftIO (doFetch uri s) >>= continue
+          _ ->
+            continue s
+      ((Just ContentViewport), ev) -> do
+        newState <- BrickList.handleListEvent e (s ^. contentList)
+        continue $ set contentList newState s
       _ ->
         continue s
 
-doFetch :: State -> IO State
-doFetch s = do
+doFetch :: URI -> State -> IO State
+doFetch uri s = do
   -- TODO: do this asynchronously
-  let editContents = s ^. urlEditor & Editor.getEditContents & head
-  case URI.parseURI editContents of
-    Just uri -> do
-      maybe s (responseToState s) <$> Client.get uri
-
-    Nothing ->
-      return s
+  maybe s (responseToState s) <$> Client.get uri
 
 responseToState :: State -> GeminiResponse -> State
-responseToState s geminiResponse@(Client.GeminiResponse uri _) =
+responseToState s geminiResponse@(Client.GeminiResponse uri responseData) =
+  let lines =
+        case responseData of
+          Success (GeminiContent (GeminiPage {pageLines})) ->
+            pageLines
+          _ ->
+            []
+  in
     s & geminiContent .~ Loaded geminiResponse
       & currentURI ?~ uri
-
+      & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
 
 drawUI :: State -> [Widget Name]
 drawUI s =
@@ -119,18 +146,29 @@ drawUI s =
     drawUrlEditor =
       Editor.renderEditor (str . unlines) (hasFocus focus UrlEdit) (s ^. urlEditor)
 
-    outputViewport =
-      viewport ContentViewport Vertical $ s ^. geminiContent
-        & drawLoadable (drawGeminiContent (hasFocus focus ContentViewport))
+    drawContent =
+      vBox ([ s ^. geminiContent
+               & drawLoadable (drawGeminiContent
+                               (hasFocus focus ContentViewport)
+                               (s ^. contentList))
+           ]
+            ++ [ fill ' ' | not $ loadableReady (s ^. geminiContent)])
   in
     [ center $ border $
        vBox [ drawUrlEditor
             , hBorder
-            , outputViewport
+            , drawContent
             , hBorder
             , drawStatusLine s
             ]
     ]
+
+loadableReady :: Loadable a -> Bool
+loadableReady loadable =
+  case loadable of
+    NotStarted -> False
+    Loading    -> False
+    Loaded _   -> True
 
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
 drawLoadable draw loadable =
@@ -139,15 +177,15 @@ drawLoadable draw loadable =
     Loading    -> str "Loading..."
     Loaded a   -> draw a
 
-drawGeminiContent :: Bool -> GeminiResponse -> Widget Name
-drawGeminiContent focused response =
+drawGeminiContent :: Bool -> BrickList.List Name Line -> GeminiResponse -> Widget Name
+drawGeminiContent focused lineList response =
   case response of
     GeminiResponse uri (Success content) ->
       let
         GeminiContent GeminiPage {pageLines} =
           content
       in
-        vBox $ map displayLine pageLines
+        BrickList.renderList (const (\line -> displayLine line <+> str " ")) focused lineList
     GeminiResponse uri resp ->
       str $ show resp
 
@@ -178,8 +216,9 @@ displayLink uriOrErr desc =
       T.pack $ URI.uriToString id uri ""
 
     showUri uri =
-      modifyDefAttr (`withURL` (uriToTxt uri))
-        $ withAttr "geminiUri" $ txt (uriToTxt uri)
+      hyperlink (uriToTxt uri)
+        $ withAttr "geminiUri"
+        $ txt (uriToTxt uri)
   in
     txt desc <+> str " " <+> uriBit
 
@@ -192,7 +231,7 @@ drawStatusLine s =
             str ("Currently at " <> show uri)
 
           Nothing  ->
-            str "Nowhere ;("
+            str "Let's go!"
 
     help =
       str "(Ctrl+c to quit)"
@@ -209,7 +248,9 @@ initState = State
   , _geminiContent = NotStarted
   , _urlEditor = Editor.editor UrlEdit (Just 1) "gemini://gemini.circumlunar.space/"
   , _focusRing = Focus.focusRing [UrlEdit, ContentViewport]
+  , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
+  , _history = Vector.empty
   }
 
 main :: IO ()
