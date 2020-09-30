@@ -109,12 +109,17 @@ drawUI s =
       Focus.focusGetCurrent $ s ^. focusRing
     drawUrlEditor =
       Editor.renderEditor (str . unlines) (focus == (Just UrlEdit)) (s ^. urlEditor)
-    outputVp =
+    outputViewport =
       viewport ContentViewport Vertical $
       s ^. geminiContent & drawLoadable (drawGeminiContent (focus == Just ContentViewport))
   in
     [ center $ border $
-       vBox [drawUrlEditor, hBorder, outputVp, hBorder, drawStatusLine s]
+       vBox [ drawUrlEditor
+            , hBorder
+            , outputViewport
+            , hBorder
+            , drawStatusLine s
+            ]
     ]
 
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
@@ -125,10 +130,12 @@ drawLoadable draw loadable =
     Loaded a   -> draw a
 
 drawGeminiContent :: Bool -> GeminiResponse -> Widget Name
-drawGeminiContent focused (GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines}))) =
-  vBox (map displayLine pageLines)
-drawGeminiContent focused (GeminiResponse uri resp) =
-  str (show resp)
+drawGeminiContent focused response =
+  case response of
+    GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines})) ->
+      vBox $ map displayLine pageLines
+    GeminiResponse uri resp ->
+      str $ show resp
 
 displayLine :: Line -> Widget Name
 displayLine line =
@@ -160,7 +167,8 @@ drawStatusLine s = padRight Max status <+> help
         help = str "(Ctrl+c to quit)"
 
 debugGeminiContent :: State -> String
-debugGeminiContent s = s ^. geminiContent & show
+debugGeminiContent s =
+  s ^. geminiContent & show
 
 initState :: State
 initState = State
