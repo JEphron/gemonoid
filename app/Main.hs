@@ -81,6 +81,14 @@ pop v =
   else
     (Vector.init v, Just $ Vector.last v)
 
+popHistory :: State -> Either State (State, URI)
+popHistory s =
+  case pop (s ^. history) of
+    (newHistory, Just uri) ->
+      Right (s & history .~ newHistory, uri)
+    _ ->
+      Left s
+
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
 handleEvent s (VtyEvent e) =
   let
@@ -109,14 +117,10 @@ handleEvent s (VtyEvent e) =
         newState <- Editor.handleEditorEvent e (s ^. urlEditor)
         continue $ set urlEditor newState s
       ((Just ContentViewport), (V.EvKey V.KBS [])) -> do
-        let (newHistory, maybeUri) = pop (s ^. history)
-        case maybeUri of
-          Just uri ->
-              let
-                newS = s & history .~ newHistory
-              in
-              liftIO (doFetch uri False newS) >>= continue
-          Nothing ->
+        case popHistory s of
+          Right (s, uri) ->
+              liftIO (doFetch uri False s) >>= continue
+          Left s ->
             continue s
       ((Just ContentViewport), (V.EvKey V.KEnter [])) -> do
         let selection = s ^. contentList & BrickList.listSelectedElement
@@ -126,7 +130,7 @@ handleEvent s (VtyEvent e) =
           _ ->
             continue s
       ((Just ContentViewport), ev) -> do
-        newState <- BrickList.handleListEvent e (s ^. contentList)
+        newState <- BrickList.handleListEventVi BrickList.handleListEvent e (s ^. contentList)
         continue $ set contentList newState s
       _ ->
         continue s
@@ -144,6 +148,8 @@ responseToState :: State -> Bool -> GeminiResponse -> State
 responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
   let lines =
         case responseData of
+          Success (TextContent lines) ->
+            fmap TextLine lines
           Success (GeminiContent (GeminiPage {pageLines})) ->
             pageLines
           _ ->
@@ -207,14 +213,10 @@ drawLoadable draw loadable =
 drawGeminiContent :: Bool -> BrickList.List Name Line -> GeminiResponse -> Widget Name
 drawGeminiContent focused lineList response =
   case response of
-    GeminiResponse uri (Success content) ->
-      let
-        GeminiContent GeminiPage {pageLines} =
-          content
-      in
+    GeminiResponse uri (Success _) ->
         BrickList.renderList (const (\line -> displayLine line <+> str " ")) focused lineList
     GeminiResponse uri resp ->
-      str $ show resp
+      str "Unknown response!" <=> (str $ show resp)
 
 displayLine :: Line -> Widget Name
 displayLine line =
@@ -222,7 +224,7 @@ displayLine line =
     (HeadingLine H1 t)  -> withAttr "geminiH1" $ txt t
     (HeadingLine H2 t)  -> withAttr "geminiH2" $ txt t
     (HeadingLine H3 t)  -> withAttr "geminiH3" $ txt t
-    (TextLine t)        -> withAttr "geminiText" $ txt t
+    (TextLine t)        -> withAttr "geminiText" $ txtWrap t
     (ULLine t)          -> withAttr "geminiUl" $ txt ("• " <> t)
     (PreLine t)         -> withAttr "geminiPre" $ txt t
     (QuoteLine t)       -> withAttr "geminiQuote" $ txt ("┆ " <> t)

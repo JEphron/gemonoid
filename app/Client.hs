@@ -58,6 +58,7 @@ instance Show GeminiPage where
 
 data Content
   = GeminiContent GeminiPage
+  | TextContent [Text]
   | UnknownContent MimeType Text
   deriving (Show)
 
@@ -130,6 +131,7 @@ getRaw uri =
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
+parseSuccess uri "text/plain" lines  = TextContent lines
 parseSuccess uri mime lines          = UnknownContent mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
