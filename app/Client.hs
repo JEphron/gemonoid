@@ -90,24 +90,30 @@ get :: URI -> IO (Maybe GeminiResponse)
 get initialUri = innerGet initialUri maxRedirects
   where
     innerGet uri remainingRedirects =
-      if remainingRedirects == 0 then do
-        Log.error "Exceeded max retries!"
-        return Nothing
-      else do
-        exceptionOrResponse <- tryAny (getRaw uri)
-        case exceptionOrResponse of
-          Left exc ->
-            return (Just $ failure uri ("unknown failure: " <> show exc))
-          Right response ->
-            case parseResponse uri response of
-                Just (GeminiResponse _ (Redirect newUri)) -> do
-                    Log.warn ("Redirected to " <> (show newUri))
-                    innerGet newUri (remainingRedirects - 1)
-                other ->
-                  return other
-failure :: URI -> String -> GeminiResponse
-failure uri str =
-  GeminiResponse uri $ Failure $ FailureInfo {failureReason=str, permanent=False}
+      let
+        fail msg =
+            return $
+            Just $
+            GeminiResponse uri $
+            Failure $
+            FailureInfo {failureReason=msg, permanent=False}
+      in
+        if uriScheme uri /= "gemini:" then
+          fail "I only understand Gemini URLs! Get a real browser!"
+        else if remainingRedirects == 0 then do
+          fail "Exceeded max retries!"
+        else do
+          exceptionOrResponse <- tryAny (getRaw uri)
+          case exceptionOrResponse of
+            Left exc ->
+              fail $ "Unknown failure: " <> show exc
+            Right response ->
+              case parseResponse uri response of
+                  Just (GeminiResponse _ (Redirect newUri)) -> do
+                      Log.warn ("Redirected to " <> (show newUri))
+                      innerGet newUri (remainingRedirects - 1)
+                  other ->
+                    return other
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
@@ -138,8 +144,8 @@ getRaw uri =
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
-parseSuccess uri "text/plain" lines  = TextContent lines
-parseSuccess uri mime lines          = UnknownContent mime (T.unlines lines)
+parseSuccess uri "text/plain"  lines = TextContent lines
+parseSuccess uri mime          lines = UnknownContent mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
@@ -254,7 +260,8 @@ runTCPClient url port fn =
         case join addrMay of
           Just addr ->
             E.bracket (open addr) close fn
-          Nothing -> error "unable to resolve addr"
+          Nothing ->
+            error "unable to resolve addr"
 
 withTLS :: HostName -> Socket -> (TLS.Context -> IO a) -> IO a
 withTLS hostname socket fn =
