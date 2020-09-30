@@ -9,8 +9,10 @@ import           Brick
 import qualified Brick
 import qualified Brick.Main             as Brick
 import           Brick.Util             (on)
-import qualified Brick.Widgets.Border   as B
-import qualified Brick.Widgets.Center   as C
+
+import qualified Brick.Focus            as Focus
+import           Brick.Widgets.Border
+import           Brick.Widgets.Center
 import qualified Brick.Widgets.Dialog   as Dialog
 import           Brick.Widgets.Edit     (Editor)
 import qualified Brick.Widgets.Edit     as Editor
@@ -37,17 +39,20 @@ data State = State
   , _geminiContent :: Loadable Client.GeminiResponse
   , _urlEditor     :: Editor String Name
   , _logs          :: [String]
+  , _focusRing     :: Focus.FocusRing Name
   } deriving (Show)
 
+instance Show (Focus.FocusRing n) where
+  show f = "<focus ring>"
 
-data Name = UrlEdit | ContentVP deriving (Show, Eq, Ord)
+data Name = UrlEdit | ContentViewport deriving (Show, Eq, Ord)
 type Event = ()
 
 makeLenses ''State
 
 app :: App State Event Name
 app = App { appDraw = drawUI
-          , appChooseCursor = \_ -> showCursorNamed UrlEdit
+          , appChooseCursor = Focus.focusRingCursor (^. focusRing)
           , appHandleEvent = handleEvent
           , appStartEvent = return
           , appAttrMap = const myAttrMap
@@ -64,11 +69,23 @@ myAttrMap = attrMap V.defAttr [ ("geminiH1", fg white `withStyle` bold `withStyl
                               ]
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
-handleEvent s (VtyEvent (V.EvKey (V.KEnter) [])) = liftIO (doFetch s) >>= continue
-handleEvent s (VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl])) = halt s
-handleEvent s (VtyEvent ev) = do
-  newState <- Editor.handleEditorEvent ev (s ^. urlEditor)
-  continue $ set urlEditor newState s
+handleEvent s (VtyEvent e) =
+  let
+    focus = Focus.focusGetCurrent $ s ^. focusRing
+    cycleFocus = continue $ s & focusRing %~ Focus.focusNext
+  in
+    case (focus, e) of
+      ((Just UrlEdit), (V.EvKey (V.KEnter) [])) ->
+        liftIO (doFetch s) >>= continue
+      (_, (V.EvKey (V.KChar '\t') [])) ->
+        cycleFocus
+      (_, (V.EvKey (V.KChar 'c') [V.MCtrl])) ->
+        halt s
+      ((Just UrlEdit), ev) -> do
+        newState <- Editor.handleEditorEvent e (s ^. urlEditor)
+        continue $ set urlEditor newState s
+      _ ->
+        continue s
 
 doFetch :: State -> IO State
 doFetch s = do
@@ -88,23 +105,29 @@ responseToState s (Just geminiResponse@(Client.GeminiResponse uri _)) =
 
 drawUI :: State -> [Widget Name]
 drawUI s =
-  [
-    C.center $ B.border $
-      vBox [drawUrlEditor, B.hBorder, outputVp, B.hBorder, drawStatusLine s]
-  ]
-  where drawUrlEditor = s ^. urlEditor & Editor.renderEditor (str . unlines) True
-        outputVp = viewport ContentVP Vertical $
-          s ^. geminiContent & drawLoadable drawGeminiContent
+  let
+    focus =
+      Focus.focusGetCurrent $ s ^. focusRing
+    drawUrlEditor =
+      Editor.renderEditor (str . unlines) (focus == (Just UrlEdit)) (s ^. urlEditor)
+    outputVp =
+      viewport ContentViewport Vertical $
+      s ^. geminiContent & drawLoadable (drawGeminiContent (focus == Just ContentViewport))
+  in
+    [ center $ border $
+       vBox [drawUrlEditor, hBorder, outputVp, hBorder, drawStatusLine s]
+    ]
 
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
 drawLoadable _ NotStarted    = str "Not Started"
 drawLoadable _ Loading       = str "Loading..."
 drawLoadable draw (Loaded a) = draw a
 
-drawGeminiContent :: GeminiResponse -> Widget Name
-drawGeminiContent (GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines}))) =
+drawGeminiContent :: Bool -> GeminiResponse -> Widget Name
+drawGeminiContent focused (GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines}))) =
   vBox (map displayLine pageLines)
-drawGeminiContent (GeminiResponse uri resp) = str (show resp)
+drawGeminiContent focused (GeminiResponse uri resp) =
+  str (show resp)
 
 displayLine :: Line -> Widget Name
 displayLine (HeadingLine H1 t)  = withAttr "geminiH1" $ txt t
@@ -141,6 +164,7 @@ initState = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
   , _urlEditor = Editor.editor UrlEdit (Just 1) "gemini://gemini.circumlunar.space/"
+  , _focusRing = Focus.focusRing [UrlEdit, ContentViewport]
   , _logs = []
   }
 
