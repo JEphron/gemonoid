@@ -18,7 +18,7 @@ import           Brick.Widgets.Edit     (Editor)
 import qualified Brick.Widgets.Edit     as Editor
 import           Client
 import           Control.Applicative    (liftA2)
-import           Control.Monad          (join, void)
+import           Control.Monad          (guard, join, void)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Maybe             (isNothing)
 import           Data.Text              (Text)
@@ -92,16 +92,15 @@ doFetch s = do
   -- TODO: do this asynchronously
   let editContents = s ^. urlEditor & Editor.getEditContents & head
   case URI.parseURI editContents of
-    Just uri ->
-      responseToState s <$> Client.get uri
+    Just uri -> do
+      maybe s (responseToState s) <$> Client.get uri
     Nothing ->
       return s
 
-responseToState :: State -> Maybe GeminiResponse -> State
-responseToState s Nothing = s
-responseToState s (Just geminiResponse@(Client.GeminiResponse uri _)) =
-  s & geminiContent .~ Loaded geminiResponse
-    & currentURI ?~ uri
+responseToState :: State -> GeminiResponse -> State
+responseToState s geminiResponse@(Client.GeminiResponse uri _) =
+    s & geminiContent .~ Loaded geminiResponse
+      & currentURI ?~ uri
 
 drawUI :: State -> [Widget Name]
 drawUI s =
@@ -119,9 +118,11 @@ drawUI s =
     ]
 
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
-drawLoadable _ NotStarted    = str "Not Started"
-drawLoadable _ Loading       = str "Loading..."
-drawLoadable draw (Loaded a) = draw a
+drawLoadable draw loadable =
+  case loadable of
+    NotStarted -> str "Not Started"
+    Loading    -> str "Loading..."
+    Loaded a   -> draw a
 
 drawGeminiContent :: Bool -> GeminiResponse -> Widget Name
 drawGeminiContent focused (GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines}))) =
@@ -130,14 +131,16 @@ drawGeminiContent focused (GeminiResponse uri resp) =
   str (show resp)
 
 displayLine :: Line -> Widget Name
-displayLine (HeadingLine H1 t)  = withAttr "geminiH1" $ txt t
-displayLine (HeadingLine H2 t)  = withAttr "geminiH2" $ txt t
-displayLine (HeadingLine H3 t)  = withAttr "geminiH3" $ txt t
-displayLine (TextLine t)        = withAttr "geminiText" $ txt t
-displayLine (ULLine t)          = withAttr "geminiUl" $ txt ("• " <> t)
-displayLine (PreLine t)         = withAttr "geminiPre" $ txt t
-displayLine (QuoteLine t)       = withAttr "geminiQuote" $ txt ("┆ " <> t)
-displayLine (LinkLine uri desc) = displayLink uri desc
+displayLine line =
+  case line of
+    (HeadingLine H1 t)  -> withAttr "geminiH1" $ txt t
+    (HeadingLine H2 t)  -> withAttr "geminiH2" $ txt t
+    (HeadingLine H3 t)  -> withAttr "geminiH3" $ txt t
+    (TextLine t)        -> withAttr "geminiText" $ txt t
+    (ULLine t)          -> withAttr "geminiUl" $ txt ("• " <> t)
+    (PreLine t)         -> withAttr "geminiPre" $ txt t
+    (QuoteLine t)       -> withAttr "geminiQuote" $ txt ("┆ " <> t)
+    (LinkLine uri desc) -> displayLink uri desc
 
 displayLink :: Either Text URI -> Text -> Widget Name
 displayLink uriOrErr desc =
