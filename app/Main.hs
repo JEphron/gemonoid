@@ -74,6 +74,13 @@ myAttrMap = attrMap V.defAttr [ (BrickList.listSelectedAttr, V.black `on` V.whit
                               -- , (BrickList.listAttr, V.red `on` V.black)
                               ]
 
+pop :: Vector.Vector a -> (Vector.Vector a, Maybe a)
+pop v =
+  if Vector.null v then
+    (v, Nothing)
+  else
+    (Vector.init v, Just $ Vector.last v)
+
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
 handleEvent s (VtyEvent e) =
   let
@@ -91,7 +98,7 @@ handleEvent s (VtyEvent e) =
         in
           case URI.parseURI editContents of
             Just uri -> do
-              liftIO (doFetch uri s) >>= continue
+              liftIO (doFetch uri True s) >>= continue
             Nothing ->
               continue s
       (_, (V.EvKey (V.KChar '\t') [])) ->
@@ -102,12 +109,20 @@ handleEvent s (VtyEvent e) =
         newState <- Editor.handleEditorEvent e (s ^. urlEditor)
         continue $ set urlEditor newState s
       ((Just ContentViewport), (V.EvKey V.KBS [])) -> do
-        continue s
+        let (newHistory, maybeUri) = pop (s ^. history)
+        case maybeUri of
+          Just uri ->
+              let
+                newS = s & history .~ newHistory
+              in
+              liftIO (doFetch uri False newS) >>= continue
+          Nothing ->
+            continue s
       ((Just ContentViewport), (V.EvKey V.KEnter [])) -> do
         let selection = s ^. contentList & BrickList.listSelectedElement
         case selection of
           Just (n, LinkLine (Right uri) desc) ->
-            liftIO (doFetch uri s) >>= continue
+            liftIO (doFetch uri True s) >>= continue
           _ ->
             continue s
       ((Just ContentViewport), ev) -> do
@@ -116,23 +131,35 @@ handleEvent s (VtyEvent e) =
       _ ->
         continue s
 
-doFetch :: URI -> State -> IO State
-doFetch uri s = do
+doFetch :: URI -> Bool -> State -> IO State
+doFetch uri pushHistory s = do
   -- TODO: do this asynchronously
-  maybe s (responseToState s) <$> Client.get uri
+  maybe s (responseToState s pushHistory ) <$> Client.get uri
 
-responseToState :: State -> GeminiResponse -> State
-responseToState s geminiResponse@(Client.GeminiResponse uri responseData) =
+makeUrlEditor :: String -> Editor String Name
+makeUrlEditor =
+  Editor.editor UrlEdit (Just 1)
+
+responseToState :: State -> Bool -> GeminiResponse -> State
+responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
   let lines =
         case responseData of
           Success (GeminiContent (GeminiPage {pageLines})) ->
             pageLines
           _ ->
             []
+      maybeOldURI =
+        s ^. currentURI
   in
     s & geminiContent .~ Loaded geminiResponse
       & currentURI ?~ uri
+      & urlEditor .~ makeUrlEditor (URI.uriToString id uri "")
       & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
+      & history %~ (\v ->
+                      case (pushHistory, maybeOldURI) of
+                       (True, Just oldUri) -> Vector.snoc v oldUri
+                       _                   -> v
+                   )
 
 drawUI :: State -> [Widget Name]
 drawUI s =
@@ -225,18 +252,27 @@ displayLink uriOrErr desc =
 drawStatusLine :: State -> Widget Name
 drawStatusLine s =
   let
-    status =
-      case _currentURI s of
-          Just uri ->
-            str ("Currently at " <> show uri)
+    hist = s ^. history & Vector.toList
+    lastPage =
+      case hist of
+          [lastUri] ->
+            show lastUri
 
-          Nothing  ->
-            str "Let's go!"
+          _ : [lastUri] ->
+            show lastUri
+
+          _  ->
+            ""
+    drawHistory =
+      if length hist == 0 then
+        str "No history"
+      else
+        str ("(" <> (show $ length hist) <> ") Last page: " <> lastPage)
 
     help =
       str "(Ctrl+c to quit)"
   in
-    padRight Max status <+> help
+    padRight Max drawHistory <+> help
 
 debugGeminiContent :: State -> String
 debugGeminiContent s =
@@ -246,7 +282,7 @@ initState :: State
 initState = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
-  , _urlEditor = Editor.editor UrlEdit (Just 1) "gemini://gemini.circumlunar.space/"
+  , _urlEditor = makeUrlEditor "gemini://gemini.circumlunar.space/"
   , _focusRing = Focus.focusRing [UrlEdit, ContentViewport]
   , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
