@@ -15,6 +15,7 @@ import qualified Brick.Widgets.Dialog   as Dialog
 import           Brick.Widgets.Edit     (Editor)
 import qualified Brick.Widgets.Edit     as Editor
 import           Client
+import           Control.Applicative    (liftA2)
 import           Control.Monad          (join, void)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Maybe             (isNothing)
@@ -28,6 +29,7 @@ import           Lens.Micro.Platform
 import           Network.URI            (URI)
 import qualified Network.URI            as URI
 import qualified Output
+
 data Loadable a = NotStarted | Loading | Loaded a deriving (Show)
 
 data State = State
@@ -37,8 +39,11 @@ data State = State
   , _logs          :: [String]
   } deriving (Show)
 
+
 data Name = UrlEdit | ContentVP deriving (Show, Eq, Ord)
 type Event = ()
+
+makeLenses ''State
 
 app :: App State Event Name
 app = App { appDraw = drawUI
@@ -56,19 +61,19 @@ myAttrMap = attrMap V.defAttr [ ("geminiH1", fg white `withStyle` bold `withStyl
                               , ("geminiUri", fg yellow)
                               , ("geminiPre", fg blue)
                               , ("geminiUl", fg white)
-
                               ]
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
 handleEvent s (VtyEvent (V.EvKey (V.KEnter) [])) = liftIO (doFetch s) >>= continue
 handleEvent s (VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl])) = halt s
-handleEvent s (VtyEvent ev) =
-  Editor.handleEditorEvent ev (_urlEditor s) >>= (\it -> continue $ s {_urlEditor = it})
+handleEvent s (VtyEvent ev) = do
+  newState <- Editor.handleEditorEvent ev (s ^. urlEditor)
+  continue $ set urlEditor newState s
 
 doFetch :: State -> IO State
 doFetch s = do
   -- TODO: do this asynchronously
-  let editContents = head $ Editor.getEditContents $ _urlEditor s
+  let editContents = s ^. urlEditor & Editor.getEditContents & head
   case URI.parseURI editContents of
     Just uri ->
       responseToState s <$> Client.get uri
@@ -76,24 +81,25 @@ doFetch s = do
       return s
 
 responseToState :: State -> Maybe GeminiResponse -> State
-responseToState s (Just geminiResponse@(Client.GeminiResponse uri _)) =
-  s { _geminiContent = Loaded geminiResponse, _currentURI = Just uri}
 responseToState s Nothing = s
+responseToState s (Just geminiResponse@(Client.GeminiResponse uri _)) =
+  s & geminiContent .~ Loaded geminiResponse
+    & currentURI ?~ uri
 
 drawUI :: State -> [Widget Name]
 drawUI s =
   [
     C.center $ B.border $
-      vBox [urlEditor, B.hBorder, outputVp, B.hBorder, drawStatusLine s]
+      vBox [drawUrlEditor, B.hBorder, outputVp, B.hBorder, drawStatusLine s]
   ]
-  where urlEditor = (Editor.renderEditor (str . unlines) True (_urlEditor s))
+  where drawUrlEditor = s ^. urlEditor & Editor.renderEditor (str . unlines) True
         outputVp = viewport ContentVP Vertical $
-          drawLoadable (_geminiContent s) drawGeminiContent
+          s ^. geminiContent & drawLoadable drawGeminiContent
 
-drawLoadable :: Loadable a -> (a -> Widget Name) -> Widget Name
-drawLoadable NotStarted _    = str "Not Started"
-drawLoadable Loading _       = str "Loading..."
-drawLoadable (Loaded a) draw = draw a
+drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
+drawLoadable _ NotStarted    = str "Not Started"
+drawLoadable _ Loading       = str "Loading..."
+drawLoadable draw (Loaded a) = draw a
 
 drawGeminiContent :: GeminiResponse -> Widget Name
 drawGeminiContent (GeminiResponse uri (Success (GeminiContent GeminiPage {pageLines}))) =
@@ -126,9 +132,9 @@ drawStatusLine s = padRight Max status <+> help
           Just uri -> str ("Currently at " <> show uri)
           Nothing  -> str "Nowhere ;("
         help = str "(Ctrl+c to quit)"
-debugGeminiContent :: State -> String
-debugGeminiContent s = _geminiContent s & show
 
+debugGeminiContent :: State -> String
+debugGeminiContent s = s ^. geminiContent & show
 
 initState :: State
 initState = State
