@@ -1,9 +1,8 @@
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase            #-}
-{-# LANGUAGE NamedFieldPuns        #-}
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE QuasiQuotes           #-}
-{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE NamedFieldPuns    #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes       #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 module Main where
 
@@ -97,6 +96,8 @@ myAttrMap = attrMap V.defAttr ([ (BrickList.listSelectedAttr, V.black `on` V.whi
                                , ("geminiUri", fg yellow)
                                , ("yellow", fg yellow)
                                , ("geminiPre", fg blue)
+                               , (Dialog.buttonAttr, fg white)
+                               , (Dialog.buttonSelectedAttr, black `on` yellow)
                                ] ++ rainbow)
 
 pop :: Vector.Vector a -> (Vector.Vector a, Maybe a)
@@ -123,6 +124,8 @@ handleEvent s (VtyEvent e) =
 
     cycleFocus =
       continue $ s & focusRing %~ Focus.focusNext
+    --focusOn name =
+    --  s & focusRing %~ Focus.focusNext
   in
     case (focus, e) of
       (Just UrlBar, V.EvKey V.KEnter []) ->
@@ -132,13 +135,12 @@ handleEvent s (VtyEvent e) =
         in
           case URI.parseURI editContents of
             Just uri -> do
-              let s' = s & focusRing %~ Focus.focusNext
-              liftIO (doFetch uri True s') >>= continue
+              liftIO (doFetch uri True s) >>= continue
             Nothing ->
               continue s
 
-      (_, V.EvKey (V.KChar '\t') []) ->
-        cycleFocus
+      --(_, V.EvKey (V.KChar '\t') []) ->
+      --  cycleFocus
 
       (_, V.EvKey (V.KChar 'c') [V.MCtrl]) ->
         halt s
@@ -153,9 +155,28 @@ handleEvent s (VtyEvent e) =
         continue =<<
           handleEventLensed s urlBar handleEditorEvent e
 
-      (Just TextPrompt, ev) -> -- todo: doesn't work
-          continue =<<
-            handleEventLensed s textPrompt handleEditorEvent e
+      (Just TextPrompt, V.EvKey V.KEnter []) -> do
+        case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
+          (Just currentUri, Just (Just _)) ->
+            let
+              query = s ^. textPrompt & Editor.getEditContents & unlines & T.pack & T.strip & T.unpack
+              newUri = currentUri{URI.uriQuery=("?"<>(URI.escapeURIString URI.isAllowedInURI $ query))}
+            in
+              liftIO (doFetch newUri True s) >>= continue
+
+          (Just currentUri, Just Nothing) ->
+            doPopHistory s
+
+          (Just currentUri, Nothing) ->
+            continue s
+
+          (Nothing, _) ->
+            error "wut."
+
+      (Just TextPrompt, ev) -> do
+        s' <- handleEventLensed s promptDialog Dialog.handleDialogEvent e
+        s'' <- handleEventLensed s' textPrompt handleEditorEvent e
+        continue s''
 
       (Just ContentViewport, V.EvKey V.KEnter []) -> do
         let selection = s ^. contentList & BrickList.listSelectedElement
@@ -216,16 +237,24 @@ makeUrlEditor =
   Editor.editor UrlBar (Just 1)
 
 responseToState :: State -> Bool -> GeminiResponse -> State
-responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
+responseToState s shouldPushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
+  let
+    pushHistory v =
+      case (shouldPushHistory, s ^. currentURI) of
+        (True, Just oldUri) -> Vector.snoc v oldUri
+        _                   -> v
+  in
   case responseData of
     Input promptText ->
       s & textPrompt .~ Editor.editor TextPrompt (Just 1) ""
         & geminiContent .~ Loaded geminiResponse
         & currentURI ?~ uri
+        & focusRing .~ (Focus.focusSetCurrent TextPrompt focusRingPrompt)
+        & history %~ pushHistory
         & promptDialog .~ Dialog.dialog
             (Just (T.unpack promptText))
             (Just (1, [("Cancel", Nothing), ("Submit", Just promptText)]))
-            99
+            32
 
     Success content ->
         let lines =
@@ -234,28 +263,50 @@ responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri response
                     pageLines
 
                   UnknownContent mimeType text ->
-                    -- [TextLine ("Do I look like I know what a '" <> mimeType <> "' is?")]
                     fmap TextLine (T.lines text)
 
-            maybeOldURI =
-                s ^. currentURI
         in
             s & geminiContent .~ Loaded geminiResponse
+              & currentURI ?~ uri
+              & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
+              & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
+              & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
+              & history %~ pushHistory
+    other ->
+      -- todo: fixme
+      let bogusMessage =
+            [ TextLine "welp..."
+            , TextLine (T.pack $ show other)
+            ]
+      in
+        s & geminiContent .~ Loaded geminiResponse
             & currentURI ?~ uri
             & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
-            & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
-            & history %~ (\v ->
-                            case (pushHistory, maybeOldURI) of
-                            (True, Just oldUri) -> Vector.snoc v oldUri
-                            _                   -> v
-                        )
+            & contentList %~ BrickList.listReplace (Vector.fromList bogusMessage) (Just 0)
+            & focusRing .~ (preservingFocus s focusRingNormal)
+            & history %~ pushHistory
 
-focus :: State -> Maybe Name
-focus s = Focus.focusGetCurrent $ s ^. focusRing
+getFocus :: State -> Maybe Name
+getFocus s =
+  Focus.focusGetCurrent $ s ^. focusRing
 
 hasFocus :: State -> Name -> Bool
 hasFocus s n =
-    focus s == Just n
+    getFocus s == Just n
+
+preservingFocus s newFocusRing =
+  case getFocus s of
+    Just currentFocus ->
+      Focus.focusSetCurrent currentFocus newFocusRing
+
+    Nothing ->
+      newFocusRing
+
+focusRingNormal =
+  Focus.focusRing [UrlBar, ContentViewport]
+
+focusRingPrompt =
+  Focus.focusRing [UrlBar, TextPrompt]
 
 drawUI :: State -> [Widget Name]
 drawUI s =
@@ -317,29 +368,29 @@ yellowStr =
   withAttr "yellow" . str
 
 drawGeminiContent :: State -> GeminiResponse -> Widget Name
-drawGeminiContent s response =
+drawGeminiContent s (GeminiResponse uri response) =
   case response of
-    GeminiResponse uri (Success _) ->
+    Success _ ->
         BrickList.renderList
           (\highlighted line -> displayLine line <+> str " ")
           (hasFocus s ContentViewport)
           (s ^. contentList)
 
-    GeminiResponse uri (Input inputStr) ->
+    Input inputStr ->
         vBox [ Dialog.renderDialog
                ( s ^. promptDialog)
                (drawInputEdit s)
              , fill ' '
              ]
 
-    GeminiResponse uri resp ->
+    resp ->
       str "Unknown response!" <=> (str $ show resp)
 
 drawInputEdit s =
   border
   $ Editor.renderEditor
         (str . unlines)
-        (hasFocus s ContentViewport)
+        (hasFocus s TextPrompt)
         (s ^. textPrompt)
 
 displayLine :: Line -> Widget Name
@@ -409,13 +460,13 @@ drawStatusLine s =
     drawMime =
       str $ (getMimeType s) <> " "
 
-    drawFocus =
-      str $ show (focus s)
+    drawDialogSel =
+      str $ show (Dialog.dialogSelection (s ^. promptDialog))
 
     help =
       str "(Ctrl+c to quit)"
   in
-    padRight Max drawHistory <+> drawFocus <+> help
+    padRight Max drawHistory <+> drawDialogSel <+> help
 
 getMimeType :: State -> String
 getMimeType s = case s ^. geminiContent of
@@ -423,12 +474,13 @@ getMimeType s = case s ^. geminiContent of
     T.unpack mimeType
   _ -> "?"
 
+
 initState :: String -> State
 initState initUri = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
   , _urlBar = makeUrlEditor initUri
-  , _focusRing = Focus.focusRing [UrlBar, ContentViewport]
+  , _focusRing = focusRingNormal
   , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
   , _history = Vector.empty
