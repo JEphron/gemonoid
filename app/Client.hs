@@ -178,6 +178,7 @@ calcUri incomingUriStr currentUri
       (parseRelativeReference_T incomingUriStr)
       (pure currentUri)
   | isAbsoluteURI_T incomingUriStr = parseURI_T incomingUriStr
+  | otherwise = Nothing
 
 maybeToEither :: Maybe a -> e -> Either e a
 maybeToEither (Just a) _ = Right a
