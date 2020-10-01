@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE QuasiQuotes           #-}
 {-# LANGUAGE TemplateHaskell       #-}
 
 module Main where
@@ -11,6 +12,9 @@ import qualified Brick
 import qualified Brick.Main             as Brick
 import           Brick.Util             (on)
 import qualified Data.Char              as Char
+import           Data.List
+import           Data.String            (fromString)
+import           Raw
 
 import qualified Brick.Focus            as Focus
 import           Brick.Widgets.Border
@@ -29,8 +33,8 @@ import qualified Data.Text              as T
 import qualified Data.Text.Zipper       as Zipper
 import qualified Data.Vector            as Vector
 import           Graphics.Vty           (Attr, black, blue, bold, cyan, green,
-                                         red, standout, underline, white,
-                                         withStyle, withURL, yellow)
+                                         magenta, red, standout, underline,
+                                         white, withStyle, withURL, yellow)
 import qualified Graphics.Vty           as V
 import           Lens.Micro.Platform
 import           Network.URI            (URI)
@@ -65,17 +69,31 @@ app = App { appDraw = drawUI
           , appAttrMap = const myAttrMap
           }
 
+banner :: String
+banner = [rw|
+  ____  ___ __  __  ___  _  _  ___ ___ ____
+ / ___|| __|  \/  |/ _ \| \| |/ _ \_ _|  _ \
+| |  _ | _|| |\/| | (_) | .` | (_) | || | | |
+| |_| ||___|_|  |_|\___/|_|\_|\___/___| |_| |
+ \____|                               |____/  |]
+
+
+rainbow =
+  let toAttr i color =
+        (fromString ("rainbow" <> show i), color `on` black)
+  in
+    imap toAttr [red, green, blue, yellow, magenta, cyan]
+
 myAttrMap :: AttrMap
-myAttrMap = attrMap V.defAttr [ (BrickList.listSelectedAttr, V.black `on` V.white)
-                              , ("geminiH1", V.currentAttr `withStyle` bold `withStyle` underline)
-                              , ("geminiH2", V.currentAttr `withStyle` underline)
-                              , ("geminiH3", V.currentAttr `withStyle` bold)
-                              , ("geminiUri", fg yellow)
-                              , ("geminiPre", fg blue)
-                              -- , ("geminiQuote", fg white)
-                              -- , ("geminiUl", fg white)
-                              -- , (BrickList.listAttr, V.red `on` V.black)
-                              ]
+myAttrMap = attrMap V.defAttr ([ (BrickList.listSelectedAttr, V.black `on` V.white)
+                               , ("geminiH1", V.currentAttr `withStyle` bold `withStyle` underline)
+                               , ("geminiH2", V.currentAttr `withStyle` underline)
+                               , ("geminiH3", V.currentAttr `withStyle` bold)
+                               , ("geminiUri", fg yellow)
+                               , ("geminiPre", fg blue)
+                               , ("asciiTitle", red `on` black)
+                               , ("rainbow0", red `on` black)
+                               ] ++ rainbow)
 
 pop :: Vector.Vector a -> (Vector.Vector a, Maybe a)
 pop v =
@@ -218,9 +236,26 @@ loadableReady loadable =
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
 drawLoadable draw loadable =
   case loadable of
-    NotStarted -> str "Not Started"
+    NotStarted -> drawStart
     Loading    -> str "Loading..."
     Loaded a   -> draw a
+
+imap :: (Int -> a -> b) -> [a] -> [b]
+imap fn xs  =
+  map (uncurry fn) $ zip [0..] xs
+
+drawStart =
+  let
+    makeAttrName i =
+      fromString $ ("rainbow" ++ show (i `mod` (length rainbow)))
+
+    drawBannerLine i string =
+      hBox $ imap (\j char -> withAttr (makeAttrName (i + j)) $ str [char]) string
+
+    drawBanner =
+      vBox $ imap drawBannerLine (lines banner)
+  in
+   center $ borderWithLabel (str "press <return> to start") $ drawBanner
 
 drawGeminiContent :: Bool -> BrickList.List Name Line -> GeminiResponse -> Widget Name
 drawGeminiContent focused lineList response =
@@ -288,7 +323,11 @@ drawStatusLine s =
         Left _ ->
           str "No history"
         Right (_, lastPage) ->
-          str ("(" <> (show $ length hist) <> ") Last page: " <> (show lastPage) <> " (backspace)")
+          str $ "("
+                <> (show $ length hist)
+                <> ") Last page: "
+                <> (show lastPage)
+                <> " (backspace)"
 
     drawMime =
       str $ (getMimeType s) <> " "

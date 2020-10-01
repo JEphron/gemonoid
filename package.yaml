@@ -53,6 +53,7 @@ executables:
     - vty
     - vector
     - text-zipper
+    - template-haskell
 
 tests:
   hsgemini-test:

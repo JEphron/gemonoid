@@ -41,6 +41,7 @@ executable hsgemini-exe
       Client
       Log
       Output
+      Raw
       Paths_hsgemini
   hs-source-dirs:
       app
@@ -58,6 +59,7 @@ executable hsgemini-exe
     , network
     , network-uri
     , safe
+    , template-haskell
     , text
     , text-zipper
     , tls
