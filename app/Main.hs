@@ -80,7 +80,7 @@ banner = [rw|
 
 rainbow =
   let toAttr i color =
-        (fromString ("rainbow" <> show i), color `on` black)
+        (fromString ("rainbow" <> show i), fg color)
   in
     imap toAttr [red, green, blue, yellow, magenta, cyan]
 
@@ -90,9 +90,8 @@ myAttrMap = attrMap V.defAttr ([ (BrickList.listSelectedAttr, V.black `on` V.whi
                                , ("geminiH2", V.currentAttr `withStyle` underline)
                                , ("geminiH3", V.currentAttr `withStyle` bold)
                                , ("geminiUri", fg yellow)
+                               , ("yellow", fg yellow)
                                , ("geminiPre", fg blue)
-                               , ("asciiTitle", red `on` black)
-                               , ("rainbow0", red `on` black)
                                ] ++ rainbow)
 
 pop :: Vector.Vector a -> (Vector.Vector a, Maybe a)
@@ -255,7 +254,9 @@ drawStart =
     drawBanner =
       vBox $ imap drawBannerLine (lines banner)
   in
-   center $ borderWithLabel (str "press <return> to start") $ drawBanner
+   center $ borderWithLabel (str "press " <+> (yellowStr "<return>") <+> str " to start") $ drawBanner
+
+yellowStr = withAttr "yellow" . str
 
 drawGeminiContent :: Bool -> BrickList.List Name Line -> GeminiResponse -> Widget Name
 drawGeminiContent focused lineList response =
