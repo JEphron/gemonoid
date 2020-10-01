@@ -42,7 +42,7 @@ data Loadable a = NotStarted | Loading | Loaded a deriving (Show, Eq)
 data State = State
   { _currentURI    :: Maybe URI
   , _geminiContent :: Loadable Client.GeminiResponse
-  , _urlEditor     :: Editor String Name
+  , _urlBar        :: Editor String Name
   , _logs          :: [String]
   , _focusRing     :: Focus.FocusRing Name
   , _contentList   :: BrickList.List Name Line
@@ -52,7 +52,7 @@ data State = State
 instance Show (Focus.FocusRing n) where
   show f = "<focus ring>"
 
-data Name = UrlEdit | ContentViewport | ContentList deriving (Show, Eq, Ord)
+data Name = UrlBar | ContentViewport | ContentList deriving (Show, Eq, Ord)
 type Event = ()
 
 makeLenses ''State
@@ -102,10 +102,10 @@ handleEvent s (VtyEvent e) =
       continue $ s & focusRing %~ Focus.focusNext
   in
     case (focus, e) of
-      ((Just UrlEdit), (V.EvKey V.KEnter [])) ->
+      ((Just UrlBar), (V.EvKey V.KEnter [])) ->
         let
           editContents =
-            s ^. urlEditor & Editor.getEditContents & head
+            s ^. urlBar & Editor.getEditContents & head
         in
           case URI.parseURI editContents of
             Just uri -> do
@@ -117,13 +117,13 @@ handleEvent s (VtyEvent e) =
         cycleFocus
       (_, (V.EvKey (V.KChar 'c') [V.MCtrl])) ->
         halt s
-      ((Just UrlEdit), (V.EvKey (V.KChar 'f') [V.MCtrl])) ->
-        continue $ s & urlEditor %~ Editor.applyEdit Zipper.moveRight
-      ((Just UrlEdit), (V.EvKey (V.KChar 'b') [V.MCtrl])) ->
-        continue $ s & urlEditor %~ Editor.applyEdit Zipper.moveLeft
-      ((Just UrlEdit), ev) -> do
-        newState <- Editor.handleEditorEvent e (s ^. urlEditor)
-        continue $ set urlEditor newState s
+      ((Just UrlBar), (V.EvKey (V.KChar 'f') [V.MCtrl])) ->
+        continue $ s & urlBar %~ Editor.applyEdit Zipper.moveRight
+      ((Just UrlBar), (V.EvKey (V.KChar 'b') [V.MCtrl])) ->
+        continue $ s & urlBar %~ Editor.applyEdit Zipper.moveLeft
+      ((Just UrlBar), ev) -> do
+        newState <- Editor.handleEditorEvent e (s ^. urlBar)
+        continue $ set urlBar newState s
       ((Just ContentViewport), (V.EvKey V.KBS [])) -> do
         case popHistory s of
           Right (s, uri) ->
@@ -150,7 +150,7 @@ doFetch uri pushHistory s = do
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
-  Editor.editor UrlEdit (Just 1)
+  Editor.editor UrlBar (Just 1)
 
 responseToState :: State -> Bool -> GeminiResponse -> State
 responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
@@ -171,7 +171,7 @@ responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri response
   in
     s & geminiContent .~ Loaded geminiResponse
       & currentURI ?~ uri
-      & urlEditor .~ makeUrlEditor (URI.uriToString id uri "")
+      & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
       & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
       & history %~ (\v ->
                       case (pushHistory, maybeOldURI) of
@@ -189,7 +189,7 @@ drawUI s =
       Focus.focusGetCurrent $ s ^. focusRing
 
     drawUrlEditor =
-      Editor.renderEditor (str . unlines) (hasFocus focus UrlEdit) (s ^. urlEditor)
+      Editor.renderEditor (str . unlines) (hasFocus focus UrlBar) (s ^. urlBar)
 
     drawContent =
       vBox ([ s ^. geminiContent
@@ -309,8 +309,8 @@ initState :: String -> State
 initState initUri = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
-  , _urlEditor = makeUrlEditor initUri --
-  , _focusRing = Focus.focusRing [UrlEdit, ContentViewport]
+  , _urlBar = makeUrlEditor initUri --
+  , _focusRing = Focus.focusRing [UrlBar, ContentViewport]
   , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
   , _history = Vector.empty
