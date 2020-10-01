@@ -139,8 +139,12 @@ handleEvent s (VtyEvent e) =
             Nothing ->
               continue s
 
-      --(_, V.EvKey (V.KChar '\t') []) ->
-      --  cycleFocus
+
+      (Just UrlBar, V.EvKey (V.KChar '\t') []) ->
+        cycleFocus
+
+      (Just ContentViewport, V.EvKey (V.KChar '\t') []) ->
+        cycleFocus
 
       (_, V.EvKey (V.KChar 'c') [V.MCtrl]) ->
         halt s
@@ -154,6 +158,7 @@ handleEvent s (VtyEvent e) =
       (Just UrlBar, ev) ->
         continue =<<
           handleEventLensed s urlBar handleEditorEvent e
+
 
       (Just TextPrompt, V.EvKey V.KEnter []) -> do
         case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
@@ -253,7 +258,7 @@ responseToState s shouldPushHistory geminiResponse@(Client.GeminiResponse uri re
         & history %~ pushHistory
         & promptDialog .~ Dialog.dialog
             (Just (T.unpack promptText))
-            (Just (1, [("Cancel", Nothing), ("Submit", Just promptText)]))
+            (Just (1, [("Back", Nothing), ("Submit", Just promptText)]))
             32
 
     Success content ->
@@ -402,13 +407,13 @@ displayLine line =
     TextLine t        -> withAttr "geminiText" $ txtWrap t
     ULLine t          -> withAttr "geminiUl" $ txt ("• " <> t)
     PreLine t         -> withAttr "geminiPre" $ txt t
-    QuoteLine t       -> withAttr "geminiQuote" $ txt ("┆ " <> t)
+    QuoteLine t       -> withAttr "geminiQuote" $ txtWrap ("> " <> t)
     LinkLine uri desc -> displayLink uri desc
 
 cleanupLine :: Text -> Text
 cleanupLine t =
   -- tabs and CRs screw up Brick's text wrapping
-  T.replace "\t" "  " t & T.stripEnd
+  T.replace "\t" "  " t & T.filter Char.isPrint  & T.stripEnd
 
 mapLine :: (Text -> Text) -> Line -> Line
 mapLine fn = \case
