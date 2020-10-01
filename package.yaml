@@ -1,0 +1,65 @@
+name:                hsgemini
+version:             0.1.0.0
+github:              "jephron/hsgemini"
+license:             BSD3
+author:              "jephron"
+maintainer:          "jephron"
+copyright:           "2020 jephron"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+default-extensions: OverloadedStrings
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/githubuser/hsgemini#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+
+library:
+  source-dirs: src
+
+executables:
+  hsgemini-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hsgemini
+    - network
+    - bytestring
+    - tls
+    - data-default-class
+    - x509-system
+    - network-uri
+    - ansi-terminal
+    - tls-session-manager
+    - text
+    - microlens-platform
+    - containers
+    - safe
+    - brick
+    - vty
+    - vector
+
+tests:
+  hsgemini-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hsgemini
