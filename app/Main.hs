@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TemplateHaskell       #-}
@@ -106,7 +107,8 @@ handleEvent s (VtyEvent e) =
         in
           case URI.parseURI editContents of
             Just uri -> do
-              liftIO (doFetch uri True s) >>= continue
+              let s' = s & focusRing %~ Focus.focusNext
+              liftIO (doFetch uri True s') >>= continue
             Nothing ->
               continue s
       (_, (V.EvKey (V.KChar '\t') [])) ->
@@ -148,12 +150,16 @@ responseToState :: State -> Bool -> GeminiResponse -> State
 responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
   let lines =
         case responseData of
-          Success (TextContent lines) ->
-            fmap TextLine lines
           Success (GeminiContent (GeminiPage {pageLines})) ->
             pageLines
-          _ ->
-            []
+          Success (UnknownContent mimeType text) ->
+            -- [TextLine ("Do I look like I know what a '" <> mimeType <> "' is?")]
+            fmap TextLine (T.lines text)
+          other ->
+            [ TextLine "Something wacky is happening!"
+            , TextLine $ T.pack (show other)
+            ]
+
       maybeOldURI =
         s ^. currentURI
   in
@@ -220,15 +226,29 @@ drawGeminiContent focused lineList response =
 
 displayLine :: Line -> Widget Name
 displayLine line =
-  case line of
-    (HeadingLine H1 t)  -> withAttr "geminiH1" $ txt t
-    (HeadingLine H2 t)  -> withAttr "geminiH2" $ txt t
-    (HeadingLine H3 t)  -> withAttr "geminiH3" $ txt t
-    (TextLine t)        -> withAttr "geminiText" $ txtWrap t
-    (ULLine t)          -> withAttr "geminiUl" $ txt ("• " <> t)
-    (PreLine t)         -> withAttr "geminiPre" $ txt t
-    (QuoteLine t)       -> withAttr "geminiQuote" $ txt ("┆ " <> t)
-    (LinkLine uri desc) -> displayLink uri desc
+  -- tabs screw up my terminal
+  case mapLine tabsToSpaces line of
+    HeadingLine H1 t  -> withAttr "geminiH1" $ txt t
+    HeadingLine H2 t  -> withAttr "geminiH2" $ txt t
+    HeadingLine H3 t  -> withAttr "geminiH3" $ txt t
+    TextLine t        -> withAttr "geminiText" $ txtWrap t
+    ULLine t          -> withAttr "geminiUl" $ txt ("• " <> t)
+    PreLine t         -> withAttr "geminiPre" $ txt t
+    QuoteLine t       -> withAttr "geminiQuote" $ txt ("┆ " <> t)
+    LinkLine uri desc -> displayLink uri desc
+
+tabsToSpaces :: Text -> Text
+tabsToSpaces =
+  T.replace "\t" "  "
+
+mapLine :: (Text -> Text) -> Line -> Line
+mapLine fn = \case
+  HeadingLine h t -> HeadingLine h (fn t)
+  TextLine t -> TextLine (fn t)
+  ULLine t -> ULLine (fn t)
+  PreLine t -> PreLine (fn t)
+  QuoteLine t -> QuoteLine (fn t)
+  LinkLine uri desc -> LinkLine uri (fn desc)
 
 displayLink :: Either Text URI -> Text -> Widget Name
 displayLink uriOrErr desc =
@@ -254,31 +274,30 @@ displayLink uriOrErr desc =
 drawStatusLine :: State -> Widget Name
 drawStatusLine s =
   let
-    hist = s ^. history & Vector.toList
-    lastPage =
-      case hist of
-          [lastUri] ->
-            show lastUri
+    hist =
+      s ^. history & Vector.toList
 
-          _ : [lastUri] ->
-            show lastUri
-
-          _  ->
-            ""
     drawHistory =
-      if length hist == 0 then
-        str "No history"
-      else
-        str ("(" <> (show $ length hist) <> ") Last page: " <> lastPage)
+      case popHistory s of
+        Left _ ->
+          str "No history"
+        Right (_, lastPage) ->
+          str ("(" <> (show $ length hist) <> ") Last page: " <> (show lastPage) <> " (backspace)")
+
+    drawMime =
+      str $ (getMimeType s) <> " "
 
     help =
       str "(Ctrl+c to quit)"
   in
-    padRight Max drawHistory <+> help
+    padRight Max drawHistory <+> drawMime <+> help
 
-debugGeminiContent :: State -> String
-debugGeminiContent s =
-  s ^. geminiContent & show
+getMimeType :: State -> String
+getMimeType s = case s ^. geminiContent of
+  Loaded (GeminiResponse uri (Success (UnknownContent mimeType txt))) ->
+    T.unpack mimeType
+  _ -> "?"
+
 
 initState :: State
 initState = State

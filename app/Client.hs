@@ -58,7 +58,6 @@ instance Show GeminiPage where
 
 data Content
   = GeminiContent GeminiPage
-  | TextContent [Text]
   | UnknownContent MimeType Text
   deriving (Show)
 
@@ -97,23 +96,27 @@ get initialUri = innerGet initialUri maxRedirects
             GeminiResponse uri $
             Failure $
             FailureInfo {failureReason=msg, permanent=False}
+
+        handleResponse response  =
+          case parseResponse uri response of
+            Just (GeminiResponse _ (Redirect newUri)) -> do
+              Log.warn ("Redirected to " <> (show newUri))
+              innerGet newUri (remainingRedirects - 1)
+            other ->
+              return other
       in
         if uriScheme uri /= "gemini:" then
           fail "I only understand Gemini URLs! Get a real browser!"
-        else if remainingRedirects == 0 then do
+        else if remainingRedirects == 0 then
           fail "Exceeded max retries!"
         else do
-          exceptionOrResponse <- tryAny (getRaw uri)
-          case exceptionOrResponse of
+          responseOrException <- tryAny (getRaw uri)
+          case responseOrException of
             Left exc ->
               fail $ "Unknown failure: " <> show exc
             Right response ->
-              case parseResponse uri response of
-                  Just (GeminiResponse _ (Redirect newUri)) -> do
-                      Log.warn ("Redirected to " <> (show newUri))
-                      innerGet newUri (remainingRedirects - 1)
-                  other ->
-                    return other
+              handleResponse response
+
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
@@ -144,7 +147,6 @@ getRaw uri =
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
-parseSuccess uri "text/plain"  lines = TextContent lines
 parseSuccess uri mime          lines = UnknownContent mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
@@ -207,7 +209,7 @@ parseLines uri =
           let nextIsPre = (line `startsWith` "```") `xor` isPre
               aboutToChange = (nextIsPre && not isPre) || (isPre && not nextIsPre)
            in if aboutToChange then
-                (lines, nextIsPre) -- skip
+                (lines, nextIsPre) -- skip ```
               else
                 (lines ++ [parseLine uri (isPre && nextIsPre) line], nextIsPre)
       )
