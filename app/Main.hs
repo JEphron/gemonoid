@@ -169,8 +169,12 @@ handleEvent s (VtyEvent e) =
         (Just TextPrompt, V.EvKey V.KEnter []) -> do
           case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
             (Just currentUri, Just (Just _)) ->
-              let query = s ^. textPrompt & Editor.getEditContents & unlines & T.pack & T.strip & T.unpack
-                  newUri = currentUri {URI.uriQuery = ("?" <> (URI.escapeURIString URI.isAllowedInURI $ query))}
+              let query =
+                    s ^. textPrompt
+                      & Editor.getEditContents
+                      & unlines
+                      & stripString
+                  newUri = setQuery currentUri query
                in liftIO (doFetch newUri True s) >>= continue
             (Just currentUri, Just Nothing) ->
               doPopHistory s
@@ -196,6 +200,14 @@ handleEvent s (VtyEvent e) =
             =<< handleEventLensed s contentList handleListEvent e
         _ ->
           continue s
+
+stripString :: String -> String
+stripString =
+  T.unpack . T.strip . T.pack
+
+setQuery :: URI -> String -> URI
+setQuery uri query =
+  uri {URI.uriQuery = ("?" <> (URI.escapeURIString URI.isAllowedInURI $ query))}
 
 handleEditorEvent :: (DecodeUtf8 t, Eq t, Monoid t) => V.Event -> Editor t n -> EventM n (Editor t n)
 handleEditorEvent ev ed =
