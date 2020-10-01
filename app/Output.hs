@@ -1,25 +1,32 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE NamedFieldPuns    #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Output where
 
-import           Client
+import Client
 import qualified Client
-import           Data.Maybe
-import qualified Data.Text.IO        as TIO
-import qualified Network.URI         as URI
+import Data.Maybe
+import qualified Data.Text.IO as TIO
+import qualified Network.URI as URI
 import qualified System.Console.ANSI as ANSI
 
-
 linkDescriptionStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Green]
-linkUrlStyle = [ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow,
-                ANSI.SetUnderlining ANSI.SingleUnderline]
+
+linkUrlStyle =
+  [ ANSI.SetColor ANSI.Foreground ANSI.Dull ANSI.Yellow,
+    ANSI.SetUnderlining ANSI.SingleUnderline
+  ]
+
 preStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Blue]
-hStyle h = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
-        ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
-        ++ [ANSI.SetItalicized True | h == H2]
+
+hStyle h =
+  [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+    ++ [ANSI.SetUnderlining ANSI.SingleUnderline | h == H1]
+    ++ [ANSI.SetItalicized True | h == H2]
+
 ulStyle = [ANSI.SetConsoleIntensity ANSI.BoldIntensity]
+
 errorStyle = [ANSI.SetColor ANSI.Foreground ANSI.Vivid ANSI.Red]
 
 withStyle :: [ANSI.SGR] -> IO () -> IO ()
@@ -44,7 +51,7 @@ displayLine (LinkLine uriOrStr description) = do
   putStr ")"
   TIO.putStr "\n"
 displayLine (PreLine t) = withStyle preStyle $ do
-    TIO.putStrLn t
+  TIO.putStrLn t
 displayLine (HeadingLine h t) = do
   withStyle (hStyle h) $ do
     TIO.putStrLn t
@@ -64,4 +71,4 @@ getAndDisplay :: String -> IO ()
 getAndDisplay string =
   case URI.parseURI string of
     Just uri -> Client.get uri >>= mapM_ display
-    Nothing  -> withStyle errorStyle $ TIO.putStrLn "error, invalid URI"
+    Nothing -> withStyle errorStyle $ TIO.putStrLn "error, invalid URI"

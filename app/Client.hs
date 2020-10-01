@@ -1,36 +1,36 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE NamedFieldPuns    #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Client where
 
-import           Control.Applicative        (liftA2)
-import           Control.Category           ((>>>))
-import qualified Control.Exception          as E
-import           Control.Monad              (join)
-import qualified Data.ByteString.Char8      as C
+import Control.Applicative (liftA2)
+import Control.Category ((>>>))
+import qualified Control.Exception as E
+import Control.Monad (join)
+import qualified Data.ByteString.Char8 as C
 import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.Char                  as Char
-import           Data.Default.Class         (def)
-import qualified Data.List                  as List
-import           Data.Maybe
-import           Data.Text                  (Text)
-import qualified Data.Text                  as T
-import           Data.Text.Encoding         (decodeUtf8)
-import qualified Data.Text.IO               as TIO
-import           Lens.Micro.Platform
-import           Lib
+import qualified Data.Char as Char
+import Data.Default.Class (def)
+import qualified Data.List as List
+import Data.Maybe
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8)
+import qualified Data.Text.IO as TIO
+import Lens.Micro.Platform
+import Lib
 import qualified Log
-import           Network.Socket
-import           Network.Socket.ByteString  (recv, sendAll)
-import qualified Network.TLS                as TLS
-import           Network.TLS.Extra.Cipher   (ciphersuite_default)
+import Network.Socket
+import Network.Socket.ByteString (recv, sendAll)
+import qualified Network.TLS as TLS
+import Network.TLS.Extra.Cipher (ciphersuite_default)
 import qualified Network.TLS.SessionManager as TLSSessionManager
-import           Network.URI
-import           Safe
-import qualified System.Console.ANSI        as ANSI
-import           System.Timeout
-import           System.X509                (getSystemCertificateStore)
+import Network.URI
+import Safe
+import qualified System.Console.ANSI as ANSI
+import System.Timeout
+import System.X509 (getSystemCertificateStore)
 
 type MimeType = Text
 
@@ -62,7 +62,7 @@ data Content
 
 data FailureInfo = FailureInfo
   { failureReason :: String,
-    permanent     :: Bool
+    permanent :: Bool
   }
   deriving (Show)
 
@@ -75,8 +75,8 @@ data GeminiInnerResponse
   | Unknown (Int, Int) Text
   deriving (Show)
 
-data GeminiResponse =
-  GeminiResponse URI GeminiInnerResponse
+data GeminiResponse
+  = GeminiResponse URI GeminiInnerResponse
   deriving (Show)
 
 newtype GeminiRequest = GeminiRequest URI
@@ -88,34 +88,32 @@ get :: URI -> IO (Maybe GeminiResponse)
 get initialUri = innerGet initialUri maxRedirects
   where
     innerGet uri remainingRedirects =
-      let
-        fail msg =
+      let fail msg =
             return $
-            Just $
-            GeminiResponse uri $
-            Failure $
-            FailureInfo {failureReason=msg, permanent=False}
+              Just $
+                GeminiResponse uri $
+                  Failure $
+                    FailureInfo {failureReason = msg, permanent = False}
 
-        handleResponse response  =
-          case parseResponse uri response of
-            Just (GeminiResponse _ (Redirect newUri)) -> do
-              Log.warn ("Redirected to " <> (show newUri))
-              innerGet newUri (remainingRedirects - 1)
-            other ->
-              return other
-      in
-        if uriScheme uri /= "gemini:" then
-          fail "I only understand Gemini URLs! Get a real browser!"
-        else if remainingRedirects == 0 then
-          fail "Exceeded max retries!"
-        else do
-          responseOrException <- tryAny (getRaw uri)
-          case responseOrException of
-            Left exc ->
-              fail $ "Unknown failure: " <> show exc
-            Right response ->
-              handleResponse response
-
+          handleResponse response =
+            case parseResponse uri response of
+              Just (GeminiResponse _ (Redirect newUri)) -> do
+                Log.warn ("Redirected to " <> (show newUri))
+                innerGet newUri (remainingRedirects - 1)
+              other ->
+                return other
+       in if uriScheme uri /= "gemini:"
+            then fail "I only understand Gemini URLs! Get a real browser!"
+            else
+              if remainingRedirects == 0
+                then fail "Exceeded max retries!"
+                else do
+                  responseOrException <- tryAny (getRaw uri)
+                  case responseOrException of
+                    Left exc ->
+                      fail $ "Unknown failure: " <> show exc
+                    Right response ->
+                      handleResponse response
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
@@ -146,7 +144,7 @@ getRaw uri =
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
-parseSuccess uri mime          lines = UnknownContent mime (T.unlines lines)
+parseSuccess uri mime lines = UnknownContent mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
@@ -167,14 +165,18 @@ parseGeminiPage :: URI -> [Text] -> GeminiPage
 parseGeminiPage uri = GeminiPage . parseLines uri
 
 parseURI_T = parseURI . T.unpack
+
 isRelativeReference_T = isRelativeReference . T.unpack
+
 isAbsoluteURI_T = isAbsoluteURI . T.unpack
+
 parseRelativeReference_T = parseRelativeReference . T.unpack
 
 calcUri :: Text -> URI -> Maybe URI
 calcUri incomingUriStr currentUri
   | isRelativeReference_T incomingUriStr =
-      liftA2 relativeTo
+    liftA2
+      relativeTo
       (parseRelativeReference_T incomingUriStr)
       (pure currentUri)
   | isAbsoluteURI_T incomingUriStr = parseURI_T incomingUriStr
@@ -182,16 +184,16 @@ calcUri incomingUriStr currentUri
 
 maybeToEither :: Maybe a -> e -> Either e a
 maybeToEither (Just a) _ = Right a
-maybeToEither Nothing e  = Left e
+maybeToEither Nothing e = Left e
 
 parseLine :: URI -> Bool -> Text -> Line
 parseLine currentUri isPre line
   | isPre = PreLine line
   | line `startsWith` ">" = QuoteLine (munge 1 line)
   | line `startsWith` "=>" =
-      let (uriStr, description) = munge 2 line & T.break Char.isSpace
-          uri = calcUri uriStr currentUri
-      in LinkLine (maybeToEither uri uriStr) (T.strip description)
+    let (uriStr, description) = munge 2 line & T.break Char.isSpace
+        uri = calcUri uriStr currentUri
+     in LinkLine (maybeToEither uri uriStr) (T.strip description)
   | line `startsWith` "*" = ULLine (munge 1 line)
   | line `startsWith` "###" = HeadingLine H3 (munge 3 line)
   | line `startsWith` "##" = HeadingLine H2 (munge 2 line)
@@ -208,14 +210,13 @@ parseLines uri =
       ( \(lines, isPre) line ->
           let nextIsPre = (line `startsWith` "```") `xor` isPre
               aboutToChange = (nextIsPre && not isPre) || (isPre && not nextIsPre)
-           in if aboutToChange then
-                (lines, nextIsPre) -- skip ```
-              else
-                (lines ++ [parseLine uri (isPre && nextIsPre) line], nextIsPre)
+           in if aboutToChange
+                then (lines, nextIsPre) -- skip ```
+                else (lines ++ [parseLine uri (isPre && nextIsPre) line], nextIsPre)
       )
       ([], False)
-  where xor = (/=)
-
+  where
+    xor = (/=)
 
 recvAll :: TLS.Context -> IO C.ByteString
 recvAll ctx =
@@ -233,7 +234,7 @@ recvAll ctx =
 
 rightToJust :: Either l r -> Maybe r
 rightToJust (Right r) = Just r
-rightToJust (Left l)  = Nothing
+rightToJust (Left l) = Nothing
 
 tryAny :: IO a -> IO (Either E.SomeException a)
 tryAny = E.try
@@ -245,7 +246,8 @@ safeGetAddrInfo addrInfo hostName serviceName =
             . timeout oneSecond
             $ getAddrInfo addrInfo hostName serviceName
         )
-  where oneSecond = 1000 * 1000
+  where
+    oneSecond = 1000 * 1000
 
 runTCPClient :: HostName -> ServiceName -> (Socket -> IO a) -> IO a
 runTCPClient url port fn =

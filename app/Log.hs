@@ -1,6 +1,6 @@
 module Log where
 
-import           System.Console.ANSI
+import System.Console.ANSI
 
 logf :: [SGR] -> String -> IO ()
 logf sgr str = do
