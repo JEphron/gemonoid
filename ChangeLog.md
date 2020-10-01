@@ -1,3 +1,3 @@
-# Changelog for hsgemini
+# Changelog for gemonoid
 
 ## Unreleased changes
