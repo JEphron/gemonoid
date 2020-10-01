@@ -52,6 +52,7 @@ executables:
     - brick
     - vty
     - vector
+    - text-zipper
 
 tests:
   hsgemini-test:

@@ -59,6 +59,7 @@ executable hsgemini-exe
     , network-uri
     , safe
     , text
+    , text-zipper
     , tls
     , tls-session-manager
     , vector

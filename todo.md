@@ -7,6 +7,7 @@ todos:
 [x] after hitting return in url bar
     we should auto-focus on the content pane
 [] input dialog: handle input request
+[x] emacs-style c-f c-b in urlEditor
 [] store stuff between sessions
     remember last page visited and restore
 [] fix error screen (needs vertical fill)

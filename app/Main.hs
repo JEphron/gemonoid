@@ -10,6 +10,7 @@ import           Brick
 import qualified Brick
 import qualified Brick.Main             as Brick
 import           Brick.Util             (on)
+import qualified Data.Char              as Char
 
 import qualified Brick.Focus            as Focus
 import           Brick.Widgets.Border
@@ -25,6 +26,7 @@ import           Control.Monad.IO.Class (liftIO)
 import           Data.Maybe             (isNothing)
 import           Data.Text              (Text)
 import qualified Data.Text              as T
+import qualified Data.Text.Zipper       as Zipper
 import qualified Data.Vector            as Vector
 import           Graphics.Vty           (Attr, black, blue, bold, cyan, green,
                                          red, standout, underline, white,
@@ -115,6 +117,10 @@ handleEvent s (VtyEvent e) =
         cycleFocus
       (_, (V.EvKey (V.KChar 'c') [V.MCtrl])) ->
         halt s
+      ((Just UrlEdit), (V.EvKey (V.KChar 'f') [V.MCtrl])) ->
+        continue $ s & urlEditor %~ Editor.applyEdit Zipper.moveRight
+      ((Just UrlEdit), (V.EvKey (V.KChar 'b') [V.MCtrl])) ->
+        continue $ s & urlEditor %~ Editor.applyEdit Zipper.moveLeft
       ((Just UrlEdit), ev) -> do
         newState <- Editor.handleEditorEvent e (s ^. urlEditor)
         continue $ set urlEditor newState s
@@ -226,8 +232,7 @@ drawGeminiContent focused lineList response =
 
 displayLine :: Line -> Widget Name
 displayLine line =
-  -- tabs screw up my terminal
-  case mapLine tabsToSpaces line of
+  case mapLine cleanupLine line of
     HeadingLine H1 t  -> withAttr "geminiH1" $ txt t
     HeadingLine H2 t  -> withAttr "geminiH2" $ txt t
     HeadingLine H3 t  -> withAttr "geminiH3" $ txt t
@@ -237,9 +242,10 @@ displayLine line =
     QuoteLine t       -> withAttr "geminiQuote" $ txt ("┆ " <> t)
     LinkLine uri desc -> displayLink uri desc
 
-tabsToSpaces :: Text -> Text
-tabsToSpaces =
-  T.replace "\t" "  "
+cleanupLine :: Text -> Text
+cleanupLine t =
+  -- tabs and CRs screw up Brick's text wrapping
+  T.replace "\t" "  " t & T.stripEnd
 
 mapLine :: (Text -> Text) -> Line -> Line
 mapLine fn = \case
@@ -299,11 +305,11 @@ getMimeType s = case s ^. geminiContent of
   _ -> "?"
 
 
-initState :: State
-initState = State
+initState :: String -> State
+initState initUri = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
-  , _urlEditor = makeUrlEditor "gemini://gemini.circumlunar.space/"
+  , _urlEditor = makeUrlEditor initUri --
   , _focusRing = Focus.focusRing [UrlEdit, ContentViewport]
   , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
@@ -311,7 +317,10 @@ initState = State
   }
 
 main :: IO ()
-main = do
+main = runApp "gemini://gemini.circumlunar.space/"
+
+runApp :: String -> IO ()
+runApp initUri = do
   let buildVty = V.mkVty V.defaultConfig
   initialVty <- buildVty
-  void $ customMain initialVty buildVty Nothing app initState
+  void $ customMain initialVty buildVty Nothing app (initState initUri)
