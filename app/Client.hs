@@ -28,7 +28,6 @@ import           Network.TLS.Extra.Cipher   (ciphersuite_default)
 import qualified Network.TLS.SessionManager as TLSSessionManager
 import           Network.URI
 import           Safe
-import           Status
 import qualified System.Console.ANSI        as ANSI
 import           System.Timeout
 import           System.X509                (getSystemCertificateStore)
