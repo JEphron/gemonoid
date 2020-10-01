@@ -20,7 +20,7 @@ import qualified Brick.Focus            as Focus
 import           Brick.Widgets.Border
 import           Brick.Widgets.Center
 import qualified Brick.Widgets.Dialog   as Dialog
-import           Brick.Widgets.Edit     (Editor)
+import           Brick.Widgets.Edit     (DecodeUtf8, Editor)
 import qualified Brick.Widgets.Edit     as Editor
 import qualified Brick.Widgets.List     as BrickList
 import           Client
@@ -51,12 +51,17 @@ data State = State
   , _focusRing     :: Focus.FocusRing Name
   , _contentList   :: BrickList.List Name Line
   , _history       :: Vector.Vector URI
+  , _promptDialog  :: Dialog.Dialog (Maybe Text)
+  , _textPrompt    :: Editor String Name
   } deriving (Show)
 
 instance Show (Focus.FocusRing n) where
   show f = "<focus ring>"
 
-data Name = UrlBar | ContentViewport | ContentList deriving (Show, Eq, Ord)
+instance Show (Dialog.Dialog n) where
+  show f = "<dialog>"
+
+data Name = UrlBar | ContentViewport | TextPrompt | ContentList deriving (Show, Eq, Ord)
 type Event = ()
 
 makeLenses ''State
@@ -106,6 +111,7 @@ popHistory s =
   case pop (s ^. history) of
     (newHistory, Just uri) ->
       Right (s & history .~ newHistory, uri)
+
     _ ->
       Left s
 
@@ -119,7 +125,7 @@ handleEvent s (VtyEvent e) =
       continue $ s & focusRing %~ Focus.focusNext
   in
     case (focus, e) of
-      ((Just UrlBar), (V.EvKey V.KEnter [])) ->
+      (Just UrlBar, V.EvKey V.KEnter []) ->
         let
           editContents =
             s ^. urlBar & Editor.getEditContents & head
@@ -130,35 +136,75 @@ handleEvent s (VtyEvent e) =
               liftIO (doFetch uri True s') >>= continue
             Nothing ->
               continue s
-      (_, (V.EvKey (V.KChar '\t') [])) ->
+
+      (_, V.EvKey (V.KChar '\t') []) ->
         cycleFocus
-      (_, (V.EvKey (V.KChar 'c') [V.MCtrl])) ->
+
+      (_, V.EvKey (V.KChar 'c') [V.MCtrl]) ->
         halt s
-      ((Just UrlBar), (V.EvKey (V.KChar 'f') [V.MCtrl])) ->
+
+      (Just UrlBar, V.EvKey (V.KChar 'f') [V.MCtrl]) ->
         continue $ s & urlBar %~ Editor.applyEdit Zipper.moveRight
-      ((Just UrlBar), (V.EvKey (V.KChar 'b') [V.MCtrl])) ->
+
+      (Just UrlBar, V.EvKey (V.KChar 'b') [V.MCtrl]) ->
         continue $ s & urlBar %~ Editor.applyEdit Zipper.moveLeft
-      ((Just UrlBar), ev) -> do
-        newState <- Editor.handleEditorEvent e (s ^. urlBar)
-        continue $ set urlBar newState s
-      ((Just ContentViewport), (V.EvKey V.KBS [])) -> do
-        case popHistory s of
-          Right (s, uri) ->
-              liftIO (doFetch uri False s) >>= continue
-          Left s ->
-            continue s
-      ((Just ContentViewport), (V.EvKey V.KEnter [])) -> do
+
+      (Just UrlBar, ev) ->
+        continue =<<
+          handleEventLensed s urlBar handleEditorEvent e
+
+      (Just TextPrompt, ev) -> -- todo: doesn't work
+          continue =<<
+            handleEventLensed s textPrompt handleEditorEvent e
+
+      (Just ContentViewport, V.EvKey V.KEnter []) -> do
         let selection = s ^. contentList & BrickList.listSelectedElement
         case selection of
           Just (n, LinkLine (Right uri) desc) ->
             liftIO (doFetch uri True s) >>= continue
           _ ->
             continue s
-      ((Just ContentViewport), ev) -> do
-        newState <- BrickList.handleListEventVi BrickList.handleListEvent e (s ^. contentList)
-        continue $ set contentList newState s
+
+      (Just ContentViewport, V.EvKey V.KBS []) ->
+        doPopHistory s
+
+      (Just ContentViewport, ev) ->
+          continue =<<
+            handleEventLensed s contentList handleListEvent e
+
       _ ->
         continue s
+
+handleEditorEvent :: (DecodeUtf8 t, Eq t, Monoid t) => V.Event -> Editor t n -> EventM n (Editor t n)
+handleEditorEvent ev ed =
+  -- decorate with some emacsy keybindings
+  case ev of
+      V.EvKey (V.KChar 'f') [V.MCtrl] ->
+        return $ Editor.applyEdit Zipper.moveRight ed
+
+      V.EvKey (V.KChar 'b') [V.MCtrl] ->
+        return $ Editor.applyEdit Zipper.moveLeft ed
+
+      _ ->
+        Editor.handleEditorEvent ev ed
+
+doPopHistory :: State -> EventM Name (Next State)
+doPopHistory s =
+    case popHistory s of
+        Right (s, uri) ->
+            liftIO (doFetch uri False s) >>= continue
+        Left s ->
+            continue s
+
+textPromptActive :: State -> Bool
+textPromptActive s =
+  case s ^. geminiContent of
+    Loaded (GeminiResponse _ (Input _)) ->
+      True
+    _ -> False
+
+handleListEvent =
+  BrickList.handleListEventVi BrickList.handleListEvent
 
 doFetch :: URI -> Bool -> State -> IO State
 doFetch uri pushHistory s = do
@@ -171,50 +217,58 @@ makeUrlEditor =
 
 responseToState :: State -> Bool -> GeminiResponse -> State
 responseToState s pushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
-  let lines =
-        case responseData of
-          Success (GeminiContent (GeminiPage {pageLines})) ->
-            pageLines
-          Success (UnknownContent mimeType text) ->
-            -- [TextLine ("Do I look like I know what a '" <> mimeType <> "' is?")]
-            fmap TextLine (T.lines text)
-          other ->
-            [ TextLine "Something wacky is happening!"
-            , TextLine $ T.pack (show other)
-            ]
+  case responseData of
+    Input promptText ->
+      s & textPrompt .~ Editor.editor TextPrompt (Just 1) ""
+        & geminiContent .~ Loaded geminiResponse
+        & currentURI ?~ uri
+        & promptDialog .~ Dialog.dialog
+            (Just (T.unpack promptText))
+            (Just (1, [("Cancel", Nothing), ("Submit", Just promptText)]))
+            99
 
-      maybeOldURI =
-        s ^. currentURI
-  in
-    s & geminiContent .~ Loaded geminiResponse
-      & currentURI ?~ uri
-      & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
-      & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
-      & history %~ (\v ->
-                      case (pushHistory, maybeOldURI) of
-                       (True, Just oldUri) -> Vector.snoc v oldUri
-                       _                   -> v
-                   )
+    Success content ->
+        let lines =
+                case content of
+                  GeminiContent (GeminiPage {pageLines}) ->
+                    pageLines
+
+                  UnknownContent mimeType text ->
+                    -- [TextLine ("Do I look like I know what a '" <> mimeType <> "' is?")]
+                    fmap TextLine (T.lines text)
+
+            maybeOldURI =
+                s ^. currentURI
+        in
+            s & geminiContent .~ Loaded geminiResponse
+            & currentURI ?~ uri
+            & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
+            & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
+            & history %~ (\v ->
+                            case (pushHistory, maybeOldURI) of
+                            (True, Just oldUri) -> Vector.snoc v oldUri
+                            _                   -> v
+                        )
+
+focus :: State -> Maybe Name
+focus s = Focus.focusGetCurrent $ s ^. focusRing
+
+hasFocus :: State -> Name -> Bool
+hasFocus s n =
+    focus s == Just n
 
 drawUI :: State -> [Widget Name]
 drawUI s =
   let
-    hasFocus a b =
-      a == Just b
-
-    focus =
-      Focus.focusGetCurrent $ s ^. focusRing
-
     drawUrlEditor =
-      Editor.renderEditor (str . unlines) (hasFocus focus UrlBar) (s ^. urlBar)
+      Editor.renderEditor
+        (str . unlines)
+        (hasFocus s UrlBar)
+        (s ^. urlBar)
 
     drawContent =
-      vBox ([ s ^. geminiContent
-               & drawLoadable (drawGeminiContent
-                               (hasFocus focus ContentViewport)
-                               (s ^. contentList))
-           ]
-            ++ [ fill ' ' | not $ loadableReady (s ^. geminiContent)])
+      vBox ([ s ^. geminiContent & drawLoadable (drawGeminiContent s)]
+             ++ [ fill ' ' | not $ loadableReady (s ^. geminiContent)])
   in
     [ center $ border $
        vBox [ drawUrlEditor
@@ -253,18 +307,40 @@ drawStart =
 
     drawBanner =
       vBox $ imap drawBannerLine (lines banner)
+
+    drawLabel =
+      str "press " <+> (yellowStr "<return>") <+> str " to start"
   in
-   center $ borderWithLabel (str "press " <+> (yellowStr "<return>") <+> str " to start") $ drawBanner
+   center $ borderWithLabel drawLabel $ drawBanner
 
-yellowStr = withAttr "yellow" . str
+yellowStr =
+  withAttr "yellow" . str
 
-drawGeminiContent :: Bool -> BrickList.List Name Line -> GeminiResponse -> Widget Name
-drawGeminiContent focused lineList response =
+drawGeminiContent :: State -> GeminiResponse -> Widget Name
+drawGeminiContent s response =
   case response of
     GeminiResponse uri (Success _) ->
-        BrickList.renderList (const (\line -> displayLine line <+> str " ")) focused lineList
+        BrickList.renderList
+          (\highlighted line -> displayLine line <+> str " ")
+          (hasFocus s ContentViewport)
+          (s ^. contentList)
+
+    GeminiResponse uri (Input inputStr) ->
+        vBox [ Dialog.renderDialog
+               ( s ^. promptDialog)
+               (drawInputEdit s)
+             , fill ' '
+             ]
+
     GeminiResponse uri resp ->
       str "Unknown response!" <=> (str $ show resp)
+
+drawInputEdit s =
+  border
+  $ Editor.renderEditor
+        (str . unlines)
+        (hasFocus s ContentViewport)
+        (s ^. textPrompt)
 
 displayLine :: Line -> Widget Name
 displayLine line =
@@ -285,11 +361,11 @@ cleanupLine t =
 
 mapLine :: (Text -> Text) -> Line -> Line
 mapLine fn = \case
-  HeadingLine h t -> HeadingLine h (fn t)
-  TextLine t -> TextLine (fn t)
-  ULLine t -> ULLine (fn t)
-  PreLine t -> PreLine (fn t)
-  QuoteLine t -> QuoteLine (fn t)
+  HeadingLine h t   -> HeadingLine h (fn t)
+  TextLine t        -> TextLine (fn t)
+  ULLine t          -> ULLine (fn t)
+  PreLine t         -> PreLine (fn t)
+  QuoteLine t       -> QuoteLine (fn t)
   LinkLine uri desc -> LinkLine uri (fn desc)
 
 displayLink :: Either Text URI -> Text -> Widget Name
@@ -333,10 +409,13 @@ drawStatusLine s =
     drawMime =
       str $ (getMimeType s) <> " "
 
+    drawFocus =
+      str $ show (focus s)
+
     help =
       str "(Ctrl+c to quit)"
   in
-    padRight Max drawHistory <+> drawMime <+> help
+    padRight Max drawHistory <+> drawFocus <+> help
 
 getMimeType :: State -> String
 getMimeType s = case s ^. geminiContent of
@@ -344,16 +423,17 @@ getMimeType s = case s ^. geminiContent of
     T.unpack mimeType
   _ -> "?"
 
-
 initState :: String -> State
 initState initUri = State
   { _currentURI = Nothing
   , _geminiContent = NotStarted
-  , _urlBar = makeUrlEditor initUri --
+  , _urlBar = makeUrlEditor initUri
   , _focusRing = Focus.focusRing [UrlBar, ContentViewport]
   , _contentList = BrickList.list ContentList Vector.empty 1
   , _logs = []
   , _history = Vector.empty
+  , _promptDialog = Dialog.dialog Nothing Nothing 99
+  , _textPrompt = Editor.editor TextPrompt (Just 1) ""
   }
 
 main :: IO ()
