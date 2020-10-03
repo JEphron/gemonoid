@@ -26,6 +26,8 @@ import Control.Monad (forever, guard, join, void)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Char as Char
 import Data.List
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Maybe (isNothing)
 import Data.String (fromString)
 import Data.Text (Text)
@@ -74,7 +76,8 @@ data State = State
     _contentList :: BrickList.List Name Line,
     _history :: Vector.Vector URI,
     _promptDialog :: Dialog.Dialog (Maybe Text),
-    _textPrompt :: Editor String Name
+    _textPrompt :: Editor String Name,
+    _cache :: Map URI GeminiResponse
   }
   deriving (Show)
 
@@ -265,10 +268,15 @@ handleListEvent =
   BrickList.handleListEventVi BrickList.handleListEvent
 
 doFetch :: URI -> HistoryBehavior -> State -> IO State
-doFetch uri pushHistory s = do
-  let request = PageRequest uri pushHistory
-  STM.atomically $ STM.writeTChan (s ^. requestChan) request
-  return $ s & geminiContent .~ Loading
+doFetch uri pushHistory s =
+  case Map.lookup uri (s ^. cache) of
+    Just cachedResponse ->
+      return $ responseToState s pushHistory cachedResponse
+    Nothing ->
+      do
+        let request = PageRequest uri pushHistory
+        STM.atomically $ STM.writeTChan (s ^. requestChan) request
+        return $ s & geminiContent .~ Loading
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
@@ -305,6 +313,7 @@ responseToState s historyBehavior geminiResponse@(Client.GeminiResponse uri resp
                 & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
                 & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
                 & history %~ pushHistory
+                & cache %~ Map.insert uri geminiResponse
         other ->
           -- todo: fixme
           let bogusMessage =
@@ -487,12 +496,9 @@ drawStatusLine s =
       drawMime =
         str $ (getMimeType s) <> " "
 
-      drawDialogSel =
-        str $ show (Dialog.dialogSelection (s ^. promptDialog))
-
       help =
         str "(Ctrl+c to quit)"
-   in padRight Max drawHistory <+> drawDialogSel <+> help
+   in padRight Max drawHistory <+> help
 
 getMimeType :: State -> String
 getMimeType s = case s ^. geminiContent of
@@ -511,7 +517,8 @@ initState requests initUri =
       _requestChan = requests,
       _history = Vector.empty,
       _promptDialog = Dialog.dialog Nothing Nothing 99,
-      _textPrompt = Editor.editor TextPrompt (Just 1) ""
+      _textPrompt = Editor.editor TextPrompt (Just 1) "",
+      _cache = Map.empty
     }
 
 main :: IO ()
