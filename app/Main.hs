@@ -8,6 +8,7 @@ module Main where
 
 import Brick
 import qualified Brick
+import qualified Brick.BChan as BChan
 import qualified Brick.Focus as Focus
 import qualified Brick.Main as Brick
 import Brick.Util (on)
@@ -19,7 +20,9 @@ import qualified Brick.Widgets.Edit as Editor
 import qualified Brick.Widgets.List as BrickList
 import Client
 import Control.Applicative (liftA2)
-import Control.Monad (guard, join, void)
+import Control.Concurrent (forkIO)
+import qualified Control.Concurrent.STM as STM
+import Control.Monad (forever, guard, join, void)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Char as Char
 import Data.List
@@ -54,11 +57,19 @@ import Raw
 
 data Loadable a = NotStarted | Loading | Loaded a deriving (Show, Eq)
 
+data HistoryBehavior = Push | Replace
+
+data PageRequest
+  = PageRequest URI HistoryBehavior
+
+data PageResponse
+  = PageResponse GeminiResponse HistoryBehavior
+
 data State = State
   { _currentURI :: Maybe URI,
     _geminiContent :: Loadable Client.GeminiResponse,
     _urlBar :: Editor String Name,
-    _logs :: [String],
+    _requestChan :: STM.TChan PageRequest,
     _focusRing :: Focus.FocusRing Name,
     _contentList :: BrickList.List Name Line,
     _history :: Vector.Vector URI,
@@ -70,12 +81,15 @@ data State = State
 instance Show (Focus.FocusRing n) where
   show f = "<focus ring>"
 
+instance Show (STM.TChan n) where
+  show f = "<tchan>"
+
 instance Show (Dialog.Dialog n) where
   show f = "<dialog>"
 
 data Name = UrlBar | ContentViewport | TextPrompt | ContentList deriving (Show, Eq, Ord)
 
-type Event = ()
+type Event = PageResponse
 
 makeLenses ''State
 
@@ -135,22 +149,27 @@ popHistory s =
       Left s
 
 handleEvent :: State -> BrickEvent Name Event -> EventM Name (Next State)
-handleEvent s (VtyEvent e) =
+handleEvent s (VtyEvent e) = handleVtyEvent s e
+handleEvent s (AppEvent response) = handleIncomingGeminiResponse s response
+
+handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State)
+handleIncomingGeminiResponse s (PageResponse response historyBehavior) =
+  continue $ responseToState s historyBehavior response
+
+handleVtyEvent :: State -> V.Event -> EventM Name (Next State)
+handleVtyEvent s e =
   let focus =
         Focus.focusGetCurrent $ s ^. focusRing
 
       cycleFocus =
         continue $ s & focusRing %~ Focus.focusNext
-   in --focusOn name =
-      --  s & focusRing %~ Focus.focusNext
-
-      case (focus, e) of
+   in case (focus, e) of
         (Just UrlBar, V.EvKey V.KEnter []) ->
           let editContents =
                 s ^. urlBar & Editor.getEditContents & head
            in case URI.parseURI editContents of
                 Just uri -> do
-                  liftIO (doFetch uri True s) >>= continue
+                  liftIO (doFetch uri Push s) >>= continue
                 Nothing ->
                   continue s
         (Just UrlBar, V.EvKey (V.KChar '\t') []) ->
@@ -175,7 +194,7 @@ handleEvent s (VtyEvent e) =
                       & unlines
                       & stripString
                   newUri = setQuery currentUri query
-               in liftIO (doFetch newUri True s) >>= continue
+               in liftIO (doFetch newUri Push s) >>= continue
             (Just currentUri, Just Nothing) ->
               doPopHistory s
             (Just currentUri, Nothing) ->
@@ -190,7 +209,7 @@ handleEvent s (VtyEvent e) =
           let selection = s ^. contentList & BrickList.listSelectedElement
           case selection of
             Just (n, LinkLine (Right uri) desc) ->
-              liftIO (doFetch uri True s) >>= continue
+              liftIO (doFetch uri Push s) >>= continue
             _ ->
               continue s
         (Just ContentViewport, V.EvKey V.KBS []) ->
@@ -224,7 +243,7 @@ doPopHistory :: State -> EventM Name (Next State)
 doPopHistory s =
   case popHistory s of
     Right (s, uri) ->
-      liftIO (doFetch uri False s) >>= continue
+      liftIO (doFetch uri Replace s) >>= continue
     Left s ->
       continue s
 
@@ -238,20 +257,23 @@ textPromptActive s =
 handleListEvent =
   BrickList.handleListEventVi BrickList.handleListEvent
 
-doFetch :: URI -> Bool -> State -> IO State
+doFetch :: URI -> HistoryBehavior -> State -> IO State
 doFetch uri pushHistory s = do
-  -- TODO: do this asynchronously
-  maybe s (responseToState s pushHistory) <$> Client.get uri
+  let request = PageRequest uri pushHistory
+  STM.atomically $ STM.writeTChan (s ^. requestChan) request
+  return $ s & geminiContent .~ Loading
+
+-- maybe s (responseToState s pushHistory) <$> Client.get uri
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
   Editor.editor UrlBar (Just 1)
 
-responseToState :: State -> Bool -> GeminiResponse -> State
-responseToState s shouldPushHistory geminiResponse@(Client.GeminiResponse uri responseData) =
+responseToState :: State -> HistoryBehavior -> GeminiResponse -> State
+responseToState s historyBehavior geminiResponse@(Client.GeminiResponse uri responseData) =
   let pushHistory v =
-        case (shouldPushHistory, s ^. currentURI) of
-          (True, Just oldUri) -> Vector.snoc v oldUri
+        case (historyBehavior, s ^. currentURI) of
+          (Push, Just oldUri) -> Vector.snoc v oldUri
           _ -> v
    in case responseData of
         Input promptText ->
@@ -454,7 +476,7 @@ drawStatusLine s =
               "("
                 <> (show $ length hist)
                 <> ") Last page: "
-                <> (show lastPage)
+                <> show lastPage
                 <> " (backspace)"
 
       drawMime =
@@ -473,15 +495,15 @@ getMimeType s = case s ^. geminiContent of
     T.unpack mimeType
   _ -> "?"
 
-initState :: String -> State
-initState initUri =
+initState :: STM.TChan PageRequest -> String -> State
+initState requests initUri =
   State
     { _currentURI = Nothing,
       _geminiContent = NotStarted,
       _urlBar = makeUrlEditor initUri,
       _focusRing = focusRingNormal,
       _contentList = BrickList.list ContentList Vector.empty 1,
-      _logs = [],
+      _requestChan = requests,
       _history = Vector.empty,
       _promptDialog = Dialog.dialog Nothing Nothing 99,
       _textPrompt = Editor.editor TextPrompt (Just 1) ""
@@ -494,4 +516,24 @@ runApp :: String -> IO ()
 runApp initUri = do
   let buildVty = V.mkVty V.defaultConfig
   initialVty <- buildVty
-  void $ customMain initialVty buildVty Nothing app (initState initUri)
+  (requests, responses) <- startRequestProcessor
+  let state = initState requests initUri
+  void $ customMain initialVty buildVty (Just responses) app state
+
+startRequestProcessor :: IO (STM.TChan PageRequest, BChan.BChan PageResponse)
+startRequestProcessor = do
+  requests <- STM.atomically STM.newTChan
+  responses <- BChan.newBChan 10
+  forkIO $ requestProcessor requests responses
+  return (requests, responses)
+
+requestProcessor :: STM.TChan PageRequest -> BChan.BChan PageResponse -> IO ()
+requestProcessor requests responses =
+  forever $ do
+    PageRequest uri hist <- STM.atomically $ STM.readTChan requests
+    response <- Client.get uri
+    case response of
+      Just r ->
+        BChan.writeBChan responses (PageResponse r hist)
+      Nothing ->
+        return ()
