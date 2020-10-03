@@ -1,6 +1,6 @@
 A janky Gemini client in Haskell
 
-![Screenshot](img/screenshot-title.png)
+<img src="img/screenshot-title.png" width="256px"/>
 
 ## Installation
 
