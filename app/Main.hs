@@ -69,7 +69,6 @@ data PageResponse
 
 data State = State
   { _currentURI :: Maybe URI,
-    _geminiContent :: Loadable Client.GeminiResponse,
     _urlBar :: Editor String Name,
     _requestChan :: STM.TChan PageRequest,
     _focusRing :: Focus.FocusRing Name,
@@ -77,7 +76,7 @@ data State = State
     _history :: Vector.Vector URI,
     _promptDialog :: Dialog.Dialog (Maybe Text),
     _textPrompt :: Editor String Name,
-    _cache :: Map URI GeminiResponse
+    _cache :: Map URI (Loadable GeminiResponse)
   }
   deriving (Show)
 
@@ -156,11 +155,29 @@ handleEvent s (VtyEvent e) = handleVtyEvent s e
 handleEvent s (AppEvent response) = handleIncomingGeminiResponse s response
 
 handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State)
-handleIncomingGeminiResponse s (PageResponse response historyBehavior) =
+handleIncomingGeminiResponse s (PageResponse response historyBehavior) = do
   continue $ responseToState s historyBehavior response
 
+extractLinks :: GeminiResponse -> [URI]
+extractLinks resp =
+  []
+
+pageFromCache :: URI -> State -> Loadable GeminiResponse
+pageFromCache uri s =
+  case Map.lookup uri (s ^. cache) of
+    Just resp -> resp
+    Nothing -> NotStarted
+
+currentPage :: State -> Loadable GeminiResponse
+currentPage s =
+  case s ^. currentURI of
+    Just uri ->
+      pageFromCache uri s
+    Nothing ->
+      NotStarted
+
 isLoading :: State -> Bool
-isLoading s = case s ^. geminiContent of
+isLoading s = case currentPage s of
   Loading -> True
   _ -> False
 
@@ -259,7 +276,7 @@ doPopHistory s =
 
 textPromptActive :: State -> Bool
 textPromptActive s =
-  case s ^. geminiContent of
+  case currentPage s of
     Loaded (GeminiResponse _ (Input _)) ->
       True
     _ -> False
@@ -270,13 +287,13 @@ handleListEvent =
 doFetch :: URI -> HistoryBehavior -> State -> IO State
 doFetch uri pushHistory s =
   case Map.lookup uri (s ^. cache) of
-    Just cachedResponse ->
+    Just (Loaded cachedResponse) ->
       return $ responseToState s pushHistory cachedResponse
     Nothing ->
       do
         let request = PageRequest uri pushHistory
         STM.atomically $ STM.writeTChan (s ^. requestChan) request
-        return $ s & geminiContent .~ Loading
+        return $ s & cache %~ Map.insert uri Loading
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
@@ -291,7 +308,7 @@ responseToState s historyBehavior geminiResponse@(Client.GeminiResponse uri resp
    in case responseData of
         Input promptText ->
           s & textPrompt .~ Editor.editor TextPrompt (Just 1) ""
-            & geminiContent .~ Loaded geminiResponse
+            & cache %~ Map.insert uri (Loaded geminiResponse)
             & currentURI ?~ uri
             & focusRing .~ (Focus.focusSetCurrent TextPrompt focusRingPrompt)
             & history %~ pushHistory
@@ -307,25 +324,24 @@ responseToState s historyBehavior geminiResponse@(Client.GeminiResponse uri resp
                     pageLines
                   UnknownContent mimeType text ->
                     fmap TextLine (T.lines text)
-           in s & geminiContent .~ Loaded geminiResponse
-                & currentURI ?~ uri
+           in s & currentURI ?~ uri
                 & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
                 & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
                 & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
                 & history %~ pushHistory
-                & cache %~ Map.insert uri geminiResponse
+                & cache %~ Map.insert uri (Loaded geminiResponse)
         other ->
           -- todo: fixme
           let bogusMessage =
                 [ TextLine "welp...",
                   TextLine (T.pack $ show other)
                 ]
-           in s & geminiContent .~ Loaded geminiResponse
-                & currentURI ?~ uri
+           in s & currentURI ?~ uri
                 & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
                 & contentList %~ BrickList.listReplace (Vector.fromList bogusMessage) (Just 0)
                 & focusRing .~ (preservingFocus s focusRingNormal)
                 & history %~ pushHistory
+                & cache %~ Map.insert uri (Loaded geminiResponse)
 
 getFocus :: State -> Maybe Name
 getFocus s =
@@ -358,8 +374,8 @@ drawUI s =
 
       drawContent =
         vBox
-          ( [s ^. geminiContent & drawLoadable (drawGeminiContent s)]
-              ++ [fill ' ' | not $ loadableReady (s ^. geminiContent)]
+          ( [currentPage s & drawLoadable (drawGeminiContent s)]
+              ++ [fill ' ' | not $ loadableReady (currentPage s)]
           )
    in [ center $
           border $
@@ -501,7 +517,7 @@ drawStatusLine s =
    in padRight Max drawHistory <+> help
 
 getMimeType :: State -> String
-getMimeType s = case s ^. geminiContent of
+getMimeType s = case currentPage s of
   Loaded (GeminiResponse uri (Success (UnknownContent mimeType txt))) ->
     T.unpack mimeType
   _ -> "?"
@@ -510,7 +526,6 @@ initState :: STM.TChan PageRequest -> String -> State
 initState requests initUri =
   State
     { _currentURI = Nothing,
-      _geminiContent = NotStarted,
       _urlBar = makeUrlEditor initUri,
       _focusRing = focusRingNormal,
       _contentList = BrickList.list ContentList Vector.empty 1,
