@@ -16,11 +16,10 @@ import qualified Data.List as List
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text.Encoding (decodeUtf8')
+import Data.Text.Encoding.Error (UnicodeException)
 import qualified Data.Text.IO as TIO
 import Lens.Micro.Platform
-import Lib
-import qualified Log
 import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.TLS as TLS
@@ -98,7 +97,6 @@ get initialUri = innerGet initialUri maxRedirects
           handleResponse response =
             case parseResponse uri response of
               Just (GeminiResponse _ (Redirect newUri)) -> do
-                Log.warn ("Redirected to " <> (show newUri))
                 innerGet newUri (remainingRedirects - 1)
               other ->
                 return other
@@ -112,7 +110,9 @@ get initialUri = innerGet initialUri maxRedirects
                   case responseOrException of
                     Left exc ->
                       fail $ "Unknown failure: " <> show exc
-                    Right response ->
+                    Right (Left exc) ->
+                      fail $ "Unknown failure: " <> show exc
+                    Right (Right response) ->
                       handleResponse response
 
 parseResponse :: URI -> Text -> Maybe GeminiResponse
@@ -131,16 +131,15 @@ parseResponse uri text = do
       mkResp $ Redirect uri
     other -> mkResp $ Unknown other meta
 
-getRaw :: URI -> IO Text
+getRaw :: URI -> IO (Either UnicodeException Text)
 getRaw uri =
   let host = fromJust $ uriRegName <$> uriAuthority uri
    in runTCPClient host "1965" $ \sock -> -- todo: handle alternative port numbers
         withTLS host sock $ \ctx -> do
           let toSend = LC.pack $ uriToString id uri "\r\n"
-          Log.info ("Sending..." <> show toSend)
           TLS.sendData ctx toSend
           response <- recvAll ctx
-          return (decodeUtf8 response)
+          return (decodeUtf8' response)
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
@@ -227,7 +226,6 @@ recvAll ctx =
           Right (Just "") -> return str
           Right (Just newPart) -> recvAll' (str <> newPart)
           Right Nothing -> do
-            Log.error "timed out!"
             return str
           Left _ -> return str
    in recvAll' ""
@@ -291,7 +289,6 @@ withTLS hostname socket fn =
               def
                 { TLS.onServerCertificate = \store cache serviceId certChain -> return [],
                   TLS.onCertificateRequest = \thing -> do
-                    Log.info "ignoring client cert request"
                     return Nothing
                 }
           }
