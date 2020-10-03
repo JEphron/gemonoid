@@ -56,8 +56,9 @@ import Network.URI (URI)
 import qualified Network.URI as URI
 import qualified Output
 import Raw
+import System.Timeout
 
-data Loadable a = NotStarted | Loading | Loaded a | Errored deriving (Show, Eq)
+data Loadable a = NotStarted | Loading | Loaded a | NetErr deriving (Show, Eq)
 
 data HistoryBehavior = Push | Replace | Cache deriving (Eq)
 
@@ -170,7 +171,7 @@ handleIncomingGeminiResponse s (PageResponse response historyBehavior) = do
   s' <- liftIO $ whenMaybe (historyBehavior /= Cache) (prefetch response s)
   continue $ responseToState (fromMaybe s s') historyBehavior response
 handleIncomingGeminiResponse s (NoPageResponse uri) = do
-  continue $ s & cache %~ Map.insert uri Errored
+  continue $ s & cache %~ Map.insert uri NetErr
 
 whenMaybe :: (Applicative f) => Bool -> f a -> f (Maybe a)
 whenMaybe p s = if p then fmap Just s else pure Nothing
@@ -331,8 +332,8 @@ doFetch uri pushHistory s =
 startLoading :: URI -> HistoryBehavior -> State -> IO State
 startLoading uri pushHistory s = do
   let request = PageRequest uri pushHistory
-  STM.atomically $ STM.writeTChan (s ^. killChan) KillRequest
-  STM.atomically $ STM.readTChan (s ^. killChan) -- sync
+  -- STM.atomically $ STM.writeTChan (s ^. killChan) KillRequest
+  -- STM.atomically $ STM.readTChan (s ^. killChan) -- sync
   STM.atomically $ STM.writeTChan (s ^. requestChan) request
   return $ s & cache %~ Map.insert uri Loading
 
@@ -443,7 +444,7 @@ drawLoadable draw loadable =
     NotStarted -> drawStart
     Loading -> str "Loading..."
     Loaded a -> draw a
-    Errored -> str "Error!"
+    NetErr -> str "Error!"
 
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap fn xs =
@@ -532,18 +533,19 @@ displayLink cacheMap uriOrErr desc =
       drawStatus uri =
         let status =
               case (Map.lookup uri cacheMap) of
-                Just (Loaded a) -> "geminiUriLoaded"
+                Just (Loaded a) -> if isGemErr a then "geminiUriErrored" else "geminiUriLoaded"
                 Just Loading -> "geminiUriLoading"
-                Just Errored -> "geminiUriErrored"
+                Just NetErr -> "geminiUriErrored"
                 _ -> "geminiUriUnknown"
          in (withAttr status $ str "▲")
 
       showUri uri = hyperlink (uriToTxt uri) $ withAttr "yellow" $ txt (uriToTxt uri)
    in txt desc <+> str " " <+> uriBit
 
-isLoaded :: Loadable a -> Bool
-isLoaded (Loaded a) = True
-isLoaded _ = False
+isResolved :: Loadable a -> Bool
+isResolved (Loaded a) = True
+isResolved NetErr = True
+isResolved _ = False
 
 drawStatusLine :: State -> Widget Name
 drawStatusLine s =
@@ -567,7 +569,7 @@ drawStatusLine s =
 
       drawCacheSize =
         let total = show $ Map.size (s ^. cache)
-            loaded = show $ Map.size $ Map.filter isLoaded (s ^. cache)
+            loaded = show $ Map.size $ Map.filter isResolved (s ^. cache)
          in str $ total <> "/" <> loaded <> " "
 
       help =
@@ -579,6 +581,10 @@ getMimeType s = case currentPage s of
   Loaded (GeminiResponse uri (Success (UnknownContent mimeType txt))) ->
     T.unpack mimeType
   _ -> "?"
+
+isGemErr :: GeminiResponse -> Bool
+isGemErr (GeminiResponse uri (Failure _)) = True
+isGemErr _ = False
 
 initState :: STM.TChan PageRequest -> STM.TChan KillRequest -> String -> State
 initState requests kill initUri =
