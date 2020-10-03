@@ -160,16 +160,21 @@ handleEvent s (AppEvent response) = handleIncomingGeminiResponse s response
 
 handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State)
 handleIncomingGeminiResponse s (PageResponse response historyBehavior) = do
-  let uris = extractLinks response
-  newS <- liftIO $ whenMaybe (historyBehavior /= Cache) (preemptivelyLoad uris s)
-  continue $ responseToState (fromMaybe s newS) historyBehavior response
+  s' <- liftIO $ whenMaybe (historyBehavior /= Cache) (prefetch response s)
+  continue $ responseToState (fromMaybe s s') historyBehavior response
 
 whenMaybe :: (Applicative f) => Bool -> f a -> f (Maybe a)
 whenMaybe p s = if p then fmap Just s else pure Nothing
 
+prefetch :: GeminiResponse -> State -> IO State
+prefetch response s =
+  let uris = extractLinks response
+   in preemptivelyLoad uris s
+
 preemptivelyLoad :: [URI] -> State -> IO State
 preemptivelyLoad uris s =
-  foldM (\s uri -> liftIO (startLoading uri Cache s)) s uris
+  let urisToLoad = filter (\u -> Map.notMember u (s ^. cache)) uris
+   in foldM (\s uri -> liftIO (startLoading uri Cache s)) s urisToLoad
 
 extractLinks :: GeminiResponse -> [URI]
 extractLinks (Client.GeminiResponse uri resp) =
@@ -304,7 +309,8 @@ handleListEvent =
 doFetch :: URI -> HistoryBehavior -> State -> IO State
 doFetch uri pushHistory s =
   case Map.lookup uri (s ^. cache) of
-    Just (Loaded cachedResponse) ->
+    Just (Loaded cachedResponse) -> do
+      prefetch cachedResponse s
       return $ responseToState s pushHistory cachedResponse
     Just Loading ->
       return s
