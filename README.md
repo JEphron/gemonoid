@@ -1,3 +1,10 @@
-Some kinda Gemini client.
+A janky Gemini client in Haskell
 
-The simplest way to play around with this is probably `stack run`. 
+![Screenshot](img/screenshot-title.png)
+
+## Installation
+
+This project uses [Stack](https://docs.haskellstack.org/en/stable/install_and_upgrade/)
+
+Try running `stack run` in the root directory. 
+
