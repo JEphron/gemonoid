@@ -156,6 +156,11 @@ handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State
 handleIncomingGeminiResponse s (PageResponse response historyBehavior) =
   continue $ responseToState s historyBehavior response
 
+isLoading :: State -> Bool
+isLoading s = case s ^. geminiContent of
+  Loading -> True
+  _ -> False
+
 handleVtyEvent :: State -> V.Event -> EventM Name (Next State)
 handleVtyEvent s e =
   let focus =
@@ -167,11 +172,13 @@ handleVtyEvent s e =
         (Just UrlBar, V.EvKey V.KEnter []) ->
           let editContents =
                 s ^. urlBar & Editor.getEditContents & head
-           in case URI.parseURI editContents of
-                Just uri -> do
-                  liftIO (doFetch uri Push s) >>= continue
-                Nothing ->
-                  continue s
+           in if isLoading s
+                then continue s
+                else case URI.parseURI editContents of
+                  Just uri -> do
+                    liftIO (doFetch uri Push s) >>= continue
+                  Nothing ->
+                    continue s
         (Just UrlBar, V.EvKey (V.KChar '\t') []) ->
           cycleFocus
         (Just ContentViewport, V.EvKey (V.KChar '\t') []) ->
@@ -262,8 +269,6 @@ doFetch uri pushHistory s = do
   let request = PageRequest uri pushHistory
   STM.atomically $ STM.writeTChan (s ^. requestChan) request
   return $ s & geminiContent .~ Loading
-
--- maybe s (responseToState s pushHistory) <$> Client.get uri
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
