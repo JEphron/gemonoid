@@ -20,7 +20,7 @@ import qualified Brick.Widgets.Edit as Editor
 import qualified Brick.Widgets.List as BrickList
 import Client
 import Control.Applicative (liftA2)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (ThreadId, forkIO, killThread)
 import qualified Control.Concurrent.STM as STM
 import Control.Monad (foldM, foldM_, forever, guard, join, void, when)
 import Control.Monad.IO.Class (liftIO)
@@ -57,7 +57,7 @@ import qualified Network.URI as URI
 import qualified Output
 import Raw
 
-data Loadable a = NotStarted | Loading | Loaded a deriving (Show, Eq)
+data Loadable a = NotStarted | Loading | Loaded a | Errored deriving (Show, Eq)
 
 data HistoryBehavior = Push | Replace | Cache deriving (Eq)
 
@@ -66,13 +66,17 @@ data PageRequest
 
 data PageResponse
   = PageResponse GeminiResponse HistoryBehavior
+  | NoPageResponse URI
 
 type CacheMap = Map URI (Loadable GeminiResponse)
+
+data KillRequest = KillRequest | KillResponse
 
 data State = State
   { _currentURI :: Maybe URI,
     _urlBar :: Editor String Name,
     _requestChan :: STM.TChan PageRequest,
+    _killChan :: STM.TChan KillRequest,
     _focusRing :: Focus.FocusRing Name,
     _contentList :: BrickList.List Name Line,
     _history :: Vector.Vector URI,
@@ -107,6 +111,8 @@ app =
       appAttrMap = const myAttrMap
     }
 
+maxPrefetchLinks = 30
+
 banner :: String
 banner =
   [rw|
@@ -129,9 +135,10 @@ myAttrMap =
         ("geminiH1", V.currentAttr `withStyle` bold `withStyle` underline),
         ("geminiH2", V.currentAttr `withStyle` underline),
         ("geminiH3", V.currentAttr `withStyle` bold),
-        ("geminiUriUnknown", fg red),
+        ("geminiUriUnknown", fg blue),
         ("geminiUriLoading", fg yellow),
         ("geminiUriLoaded", fg green),
+        ("geminiUriErrored", fg red),
         ("yellow", fg yellow),
         ("geminiPre", fg blue),
         (Dialog.buttonAttr, fg white),
@@ -162,6 +169,8 @@ handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State
 handleIncomingGeminiResponse s (PageResponse response historyBehavior) = do
   s' <- liftIO $ whenMaybe (historyBehavior /= Cache) (prefetch response s)
   continue $ responseToState (fromMaybe s s') historyBehavior response
+handleIncomingGeminiResponse s (NoPageResponse uri) = do
+  continue $ s & cache %~ Map.insert uri Errored
 
 whenMaybe :: (Applicative f) => Bool -> f a -> f (Maybe a)
 whenMaybe p s = if p then fmap Just s else pure Nothing
@@ -169,7 +178,9 @@ whenMaybe p s = if p then fmap Just s else pure Nothing
 prefetch :: GeminiResponse -> State -> IO State
 prefetch response s =
   let uris = extractLinks response
-   in preemptivelyLoad uris s
+   in if length uris <= maxPrefetchLinks
+        then preemptivelyLoad uris s
+        else return s
 
 preemptivelyLoad :: [URI] -> State -> IO State
 preemptivelyLoad uris s =
@@ -312,14 +323,16 @@ doFetch uri pushHistory s =
     Just (Loaded cachedResponse) -> do
       prefetch cachedResponse s
       return $ responseToState s pushHistory cachedResponse
-    Just Loading ->
-      return s
+    -- Just Loading ->
+    --   return s
     _ ->
       startLoading uri pushHistory s
 
 startLoading :: URI -> HistoryBehavior -> State -> IO State
 startLoading uri pushHistory s = do
   let request = PageRequest uri pushHistory
+  STM.atomically $ STM.writeTChan (s ^. killChan) KillRequest
+  STM.atomically $ STM.readTChan (s ^. killChan) -- sync
   STM.atomically $ STM.writeTChan (s ^. requestChan) request
   return $ s & cache %~ Map.insert uri Loading
 
@@ -421,9 +434,8 @@ drawUI s =
 loadableReady :: Loadable a -> Bool
 loadableReady loadable =
   case loadable of
-    NotStarted -> False
-    Loading -> False
     Loaded _ -> True
+    _ -> False
 
 drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
 drawLoadable draw loadable =
@@ -431,6 +443,7 @@ drawLoadable draw loadable =
     NotStarted -> drawStart
     Loading -> str "Loading..."
     Loaded a -> draw a
+    Errored -> str "Error!"
 
 imap :: (Int -> a -> b) -> [a] -> [b]
 imap fn xs =
@@ -509,22 +522,23 @@ displayLink cacheMap uriOrErr desc =
   let uriBit =
         case uriOrErr of
           Right uri ->
-            str "(" <+> (showUri uri) <+> str ")"
+            str "(" <+> (showUri uri) <+> str ") " <+> (drawStatus uri)
           Left foo ->
             txt ("<URI parse failed!> - " <> foo)
 
       uriToTxt uri =
         T.pack $ URI.uriToString id uri ""
 
-      showUri uri =
-        let at =
+      drawStatus uri =
+        let status =
               case (Map.lookup uri cacheMap) of
                 Just (Loaded a) -> "geminiUriLoaded"
                 Just Loading -> "geminiUriLoading"
+                Just Errored -> "geminiUriErrored"
                 _ -> "geminiUriUnknown"
-         in hyperlink (uriToTxt uri) $
-              withAttr at $
-                txt (uriToTxt uri)
+         in (withAttr status $ str "▲")
+
+      showUri uri = hyperlink (uriToTxt uri) $ withAttr "yellow" $ txt (uriToTxt uri)
    in txt desc <+> str " " <+> uriBit
 
 isLoaded :: Loadable a -> Bool
@@ -566,14 +580,15 @@ getMimeType s = case currentPage s of
     T.unpack mimeType
   _ -> "?"
 
-initState :: STM.TChan PageRequest -> String -> State
-initState requests initUri =
+initState :: STM.TChan PageRequest -> STM.TChan KillRequest -> String -> State
+initState requests kill initUri =
   State
     { _currentURI = Nothing,
       _urlBar = makeUrlEditor initUri,
       _focusRing = focusRingNormal,
       _contentList = BrickList.list ContentList Vector.empty 1,
       _requestChan = requests,
+      _killChan = kill,
       _history = Vector.empty,
       _promptDialog = Dialog.dialog Nothing Nothing 99,
       _textPrompt = Editor.editor TextPrompt (Just 1) "",
@@ -587,18 +602,29 @@ runApp :: String -> IO ()
 runApp initUri = do
   let buildVty = V.mkVty V.defaultConfig
   initialVty <- buildVty
-  (requests, responses) <- startRequestProcessor
-  let state = initState requests initUri
+  (requests, kill, responses) <- startRequestProcessor
+  let state = initState requests kill initUri
   void $ customMain initialVty buildVty (Just responses) app state
 
-startRequestProcessor :: IO (STM.TChan PageRequest, BChan.BChan PageResponse)
+startRequestProcessor :: IO (STM.TChan PageRequest, STM.TChan KillRequest, BChan.BChan PageResponse)
 startRequestProcessor = do
   requests <- STM.atomically STM.newTChan
+  kill <- STM.atomically STM.newTChan
   responses <- BChan.newBChan 10
-  forkIO $ requestProcessor requests responses
-  forkIO $ requestProcessor requests responses
-  forkIO $ requestProcessor requests responses
-  return (requests, responses)
+  multithread (requestProcessor requests responses) 10
+  return (requests, kill, responses)
+
+multithread :: IO () -> Int -> IO [ThreadId]
+multithread threadBuilder nThreads =
+  sequence $ replicate nThreads $ forkIO threadBuilder
+
+supervisor :: IO () -> Int -> STM.TChan KillRequest -> IO ()
+supervisor threadBuilder nThreads kill =
+  forever $ do
+    tids <- multithread threadBuilder nThreads
+    STM.atomically $ STM.readTChan kill
+    mapM_ killThread tids
+    STM.atomically $ STM.writeTChan kill KillResponse
 
 requestProcessor :: STM.TChan PageRequest -> BChan.BChan PageResponse -> IO ()
 requestProcessor requests responses =
@@ -609,4 +635,4 @@ requestProcessor requests responses =
       Just r ->
         BChan.writeBChan responses (PageResponse r hist)
       Nothing ->
-        return ()
+        BChan.writeBChan responses (NoPageResponse uri)
