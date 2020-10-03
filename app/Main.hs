@@ -54,7 +54,6 @@ import qualified Graphics.Vty as V
 import Lens.Micro.Platform
 import Network.URI (URI)
 import qualified Network.URI as URI
-import qualified Output
 import Raw
 import System.Timeout
 

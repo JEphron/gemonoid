@@ -37,7 +37,6 @@ executable gemonoid-exe
   main-is: Main.hs
   other-modules:
       Client
-      Output
       Raw
       Paths_gemonoid
   hs-source-dirs:
