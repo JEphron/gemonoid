@@ -30,6 +30,7 @@ import Safe
 import qualified System.Console.ANSI as ANSI
 import System.Timeout
 import System.X509 (getSystemCertificateStore)
+import Utils
 
 type MimeType = Text
 
@@ -48,15 +49,9 @@ data Line
   | QuoteLine Text
   deriving (Show)
 
-newtype GeminiPage = GeminiPage {pageLines :: [Line]}
-
-instance Show GeminiPage where
-  show GeminiPage {pageLines} =
-    "\n" ++ List.intercalate "\n" (map show pageLines)
-
-data Content
-  = GeminiContent GeminiPage
-  | UnknownContent MimeType Text
+data Resource
+  = GeminiResource [Line]
+  | UnknownResource MimeType Text
   deriving (Show)
 
 data FailureInfo = FailureInfo
@@ -65,20 +60,14 @@ data FailureInfo = FailureInfo
   }
   deriving (Show)
 
-data GeminiInnerResponse
+data GeminiResponse
   = Input Text -- prompt
-  | Success Content
+  | Success Resource
   | Redirect URI
   | Failure FailureInfo
   | CertRequest
   | Unknown (Int, Int) Text
   deriving (Show)
-
-data GeminiResponse
-  = GeminiResponse URI GeminiInnerResponse
-  deriving (Show)
-
-newtype GeminiRequest = GeminiRequest URI
 
 maxRedirects :: Int
 maxRedirects = 4
@@ -90,13 +79,12 @@ get initialUri = innerGet initialUri maxRedirects
       let fail msg =
             return $
               Just $
-                GeminiResponse uri $
-                  Failure $
-                    FailureInfo {failureReason = msg, permanent = False}
+                Failure $
+                  FailureInfo {failureReason = msg, permanent = False}
 
           handleResponse response =
             case parseResponse uri response of
-              Just (GeminiResponse _ (Redirect newUri)) -> do
+              Just (Redirect newUri) -> do
                 innerGet newUri (remainingRedirects - 1)
               other ->
                 return other
@@ -118,7 +106,7 @@ get initialUri = innerGet initialUri maxRedirects
 parseResponse :: URI -> Text -> Maybe GeminiResponse
 parseResponse uri text = do
   let lines = T.lines text
-  let mkResp d = Just $ GeminiResponse uri d
+  let mkResp d = Just $ d
   (header, body) <- List.uncons lines
   (status, meta) <- parseMeta header
   case status of
@@ -141,9 +129,9 @@ getRaw uri =
           response <- recvAll ctx
           return (decodeUtf8' response)
 
-parseSuccess :: URI -> MimeType -> [Text] -> Content
-parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
-parseSuccess uri mime lines = UnknownContent mime (T.unlines lines)
+parseSuccess :: URI -> MimeType -> [Text] -> Resource
+parseSuccess uri "text/gemini" lines = GeminiResource $ parseLines uri lines
+parseSuccess uri mime lines = UnknownResource mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
@@ -159,9 +147,6 @@ startsWith txt beg = T.take (T.length beg) txt == beg
 
 parseMimeType :: Text -> Maybe MimeType
 parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
-
-parseGeminiPage :: URI -> [Text] -> GeminiPage
-parseGeminiPage uri = GeminiPage . parseLines uri
 
 parseURI_T = parseURI . T.unpack
 
@@ -229,13 +214,6 @@ recvAll ctx =
             return str
           Left _ -> return str
    in recvAll' ""
-
-rightToJust :: Either l r -> Maybe r
-rightToJust (Right r) = Just r
-rightToJust (Left l) = Nothing
-
-tryAny :: IO a -> IO (Either E.SomeException a)
-tryAny = E.try
 
 safeGetAddrInfo :: Maybe AddrInfo -> Maybe HostName -> Maybe ServiceName -> IO (Maybe [AddrInfo])
 safeGetAddrInfo addrInfo hostName serviceName =
