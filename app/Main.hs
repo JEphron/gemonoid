@@ -149,7 +149,7 @@ handleIncomingGeminiResponse s response =
       let page = Page.loaded uri response
       -- s' <- liftIO $ whenMaybe (historyBehavior /= History.Cache) (prefetch response s)
       -- continue $ responseToState (fromMaybe s s') historyBehavior response
-      continue $ showPage page historyBehavior s
+      continue $ navigateToPage page historyBehavior s
     NoPageResponse uri -> do
       -- todo
       -- continue $ s & cache %~ Cache.insert uri NetErr
@@ -222,6 +222,7 @@ handleVtyEvent s e =
     (Just UrlBar, ev) ->
       continue
         =<< handleEventLensed s urlBar handleEditorEvent e
+    -- todo
     -- (Just TextPrompt, V.EvKey V.KEnter []) -> do
     --   case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
     --     (Just currentUri, Just (Just _)) ->
@@ -291,15 +292,15 @@ doFetch uri historyBehavior s =
     Just page -> do
       -- todo: prefetch cachedResponse s
       -- todo: wait for page to load before initting contentList
-      return $ showPage page historyBehavior s
+      return $ navigateToPage page historyBehavior s
     -- return $ responseToState s pushHistory cachedResponse
     -- Just Loading ->
     --   return s
     _ ->
       startLoading uri historyBehavior s
 
-showPage :: Page -> History.Behavior -> State -> State
-showPage page historyBehavior s =
+navigateToPage :: Page -> History.Behavior -> State -> State
+navigateToPage page historyBehavior s =
   -- todo: handle Input, Errors, Other content types
   -- todo: handle page not yet loaded
   s & currentTabL %~ Tab.show page historyBehavior
@@ -389,27 +390,28 @@ focusRingPrompt =
 
 drawUI :: State -> [Widget Name]
 drawUI s =
-  let drawUrlEditor =
-        Editor.renderEditor
-          (str . unlines)
-          (hasFocus s UrlBar)
-          (s ^. urlBar)
-
-      drawContent =
+  [ center $
+      border $
         vBox
-          ( [currentPage s & drawPage s]
-              ++ [fill ' ' | not $ isLoading s]
-          )
-   in [ center $
-          border $
-            vBox
-              [ drawUrlEditor,
-                hBorder,
-                drawContent,
-                hBorder,
-                drawStatusLine s
-              ]
-      ]
+          [ drawUrlBar s,
+            hBorder,
+            drawMainContent s,
+            hBorder,
+            drawStatusLine s
+          ]
+  ]
+
+drawUrlBar :: State -> Widget Name
+drawUrlBar s =
+  Editor.renderEditor
+    (str . unlines)
+    (hasFocus s UrlBar)
+    (s ^. urlBar)
+
+drawMainContent s =
+  vBox $
+    [currentPage s & drawPage s]
+      ++ [fill ' ' | isLoading s]
 
 drawStart =
   let drawLabel =
