@@ -17,3 +17,7 @@ isResolved :: Loadable a -> Bool
 isResolved (Loaded _) = True
 isResolved (NetErr) = True
 isResolved _ = False
+
+isLoading :: Loadable a -> Bool
+isLoading Loading = True
+isLoading _ = False

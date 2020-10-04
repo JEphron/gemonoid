@@ -35,3 +35,7 @@ show newPage historyBehavior tab =
             & history %~ History.replace oldPage
         History.Cache ->
           error "todo"
+
+back :: Tab -> Tab
+back tab =
+  tab & history %~ History.pop'

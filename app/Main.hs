@@ -143,11 +143,17 @@ handleEvent s (VtyEvent e) = handleVtyEvent s e
 handleEvent s (AppEvent response) = handleIncomingGeminiResponse s response
 
 handleIncomingGeminiResponse :: State -> PageResponse -> EventM Name (Next State)
-handleIncomingGeminiResponse s (PageResponse response historyBehavior) = do
-  s' <- liftIO $ whenMaybe (historyBehavior /= History.Cache) (prefetch response s)
-  continue $ responseToState (fromMaybe s s') historyBehavior response
-handleIncomingGeminiResponse s (NoPageResponse uri) = do
-  continue $ s & cache %~ Map.insert uri NetErr
+handleIncomingGeminiResponse s response =
+  case response of
+    PageResponse uri response historyBehavior -> do
+      let page = Page.loaded uri response
+      -- s' <- liftIO $ whenMaybe (historyBehavior /= History.Cache) (prefetch response s)
+      -- continue $ responseToState (fromMaybe s s') historyBehavior response
+      continue $ showPage page historyBehavior s
+    NoPageResponse uri -> do
+      -- todo
+      -- continue $ s & cache %~ Cache.insert uri NetErr
+      continue s
 
 prefetch :: Page -> State -> IO State
 prefetch page s =
@@ -158,24 +164,34 @@ prefetch page s =
 
 preemptivelyLoad :: [URI] -> State -> IO State
 preemptivelyLoad uris s =
-  let urisToLoad = filter (\u -> Map.notMember u (s ^. cache)) uris
+  let urisToLoad = filter (\u -> Cache.missing u (s ^. cache)) uris
    in foldM (\s uri -> liftIO (startLoading uri History.Cache s)) s urisToLoad
 
 pageFromCache :: URI -> State -> Loadable GeminiResponse
 pageFromCache uri s =
-  case Map.lookup uri (s ^. cache) of
-    Just resp -> resp
+  case s ^. cache & Cache.get uri of
+    Just page -> page ^. Page.content
     Nothing -> NotStarted
 
-currentPage :: State -> Maybe Page
+currentTab :: State -> Tab
+currentTab s =
+  fromMaybe Tab.new (s ^. tabs & CList.focus)
+
+setCurrentTab :: State -> Tab -> State
+setCurrentTab s tab =
+  s & tabs .~ CList.update tab (s ^. tabs)
+
+currentTabL :: Lens' State Tab
+currentTabL =
+  lens currentTab setCurrentTab
+
+currentPage :: State -> Page
 currentPage s =
-  s ^. tabs & CList.focus
+  currentTab s ^. Tab.page
 
 isLoading :: State -> Bool
 isLoading s =
-  case currentPage s of
-    Just page -> not $ Page.isLoaded page
-    _ -> False
+  Page.isLoading $ currentPage s
 
 cycleFocus s =
   continue $ s & focusRing %~ Focus.focusNext
@@ -206,22 +222,22 @@ handleVtyEvent s e =
     (Just UrlBar, ev) ->
       continue
         =<< handleEventLensed s urlBar handleEditorEvent e
-    (Just TextPrompt, V.EvKey V.KEnter []) -> do
-      case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
-        (Just currentUri, Just (Just _)) ->
-          let query =
-                s ^. textPrompt
-                  & Editor.getEditContents
-                  & unlines
-                  & stripString
-              newUri = setQuery currentUri query
-           in liftIO (doFetch newUri History.Push s) >>= continue
-        (Just currentUri, Just Nothing) ->
-          doPopHistory s
-        (Just currentUri, Nothing) ->
-          continue s
-        (Nothing, _) ->
-          error "wut."
+    -- (Just TextPrompt, V.EvKey V.KEnter []) -> do
+    --   case (s ^. currentURI, Dialog.dialogSelection (s ^. promptDialog)) of
+    --     (Just currentUri, Just (Just _)) ->
+    --       let query =
+    --             s ^. textPrompt
+    --               & Editor.getEditContents
+    --               & unlines
+    --               & stripString
+    --           newUri = setQuery currentUri query
+    --        in liftIO (doFetch newUri History.Push s) >>= continue
+    --     (Just currentUri, Just Nothing) ->
+    --       continue $ s & currentTabL %~ Tab.back
+    --     (Just currentUri, Nothing) ->
+    --       continue s
+    --     (Nothing, _) ->
+    --       error "wut."
     (Just TextPrompt, ev) -> do
       s' <- handleEventLensed s promptDialog Dialog.handleDialogEvent e
       s'' <- handleEventLensed s' textPrompt handleEditorEvent e
@@ -234,7 +250,7 @@ handleVtyEvent s e =
         _ ->
           continue s
     (Just ContentViewport, V.EvKey V.KBS []) ->
-      doPopHistory s
+      continue $ s & currentTabL %~ Tab.back
     (Just ContentViewport, ev) ->
       continue
         =<< handleEventLensed s contentList handleListEvent e
@@ -263,28 +279,8 @@ handleEditorEvent ev ed =
     _ ->
       Editor.handleEditorEvent ev ed
 
-popHistory :: State -> Either State (State, URI)
-popHistory s =
-  case pop (s ^. history) of
-    (newHistory, Just uri) ->
-      Right (s & history .~ newHistory, uri)
-    _ ->
-      Left s
-
-doPopHistory :: State -> EventM Name (Next State)
-doPopHistory s =
-  case popHistory s of
-    Right (s, uri) ->
-      liftIO (doFetch uri History.Replace s) >>= continue
-    Left s ->
-      continue s
-
 textPromptActive :: State -> Bool
-textPromptActive s =
-  case currentPage s of
-    Loaded (Input _) ->
-      True
-    _ -> False
+textPromptActive s = Page.isLoaded (currentPage s)
 
 handleListEvent =
   BrickList.handleListEventVi BrickList.handleListEvent
@@ -293,14 +289,24 @@ doFetch :: URI -> History.Behavior -> State -> IO State
 doFetch uri historyBehavior s =
   case Cache.get uri (s ^. cache) of
     Just page -> do
-      s & tab %~ Tab.show historyBehavior page
-      -- todo: wait for page to load, then
-      -- prefetch cachedResponse s
-      return $ responseToState s pushHistory cachedResponse
+      -- todo: prefetch cachedResponse s
+      -- todo: wait for page to load before initting contentList
+      return $ showPage page historyBehavior s
+    -- return $ responseToState s pushHistory cachedResponse
     -- Just Loading ->
     --   return s
     _ ->
       startLoading uri historyBehavior s
+
+showPage :: Page -> History.Behavior -> State -> State
+showPage page historyBehavior s =
+  -- todo: handle Input, Errors, Other content types
+  -- todo: handle page not yet loaded
+  s & currentTabL %~ Tab.show page historyBehavior
+    & urlBar .~ makeUrlEditor (URI.uriToString id (page ^. Page.uri) "")
+    & contentList %~ BrickList.listReplace (Vector.fromList $ Page.lines page) (Just 0)
+    & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
+    & cache %~ Cache.set page
 
 startLoading :: URI -> History.Behavior -> State -> IO State
 startLoading uri pushHistory s = do
@@ -308,57 +314,57 @@ startLoading uri pushHistory s = do
   -- STM.atomically $ STM.writeTChan (s ^. killChan) KillRequest
   -- STM.atomically $ STM.readTChan (s ^. killChan) -- sync
   STM.atomically $ STM.writeTChan (s ^. requestChan) request
-  return $ s & cache %~ Map.insert uri Loading
+  return $ s & cache %~ Cache.setLoading uri
 
 makeUrlEditor :: String -> Editor String Name
 makeUrlEditor =
   Editor.editor UrlBar (Just 1)
 
-responseToState :: State -> History.Behavior -> GeminiResponse -> State
-responseToState s historyBehavior responseData =
-  let pushHistory v =
-        case (historyBehavior, s ^. currentURI) of
-          (History.Push, Just oldUri) -> Vector.snoc v oldUri
-          _ -> v
-   in if historyBehavior == Cache
-        then s & cache %~ Map.insert uri (Loaded geminiResponse)
-        else case responseData of
-          Input promptText ->
-            s & textPrompt .~ Editor.editor TextPrompt (Just 1) ""
-              & cache %~ Map.insert uri (Loaded geminiResponse)
-              & currentURI ?~ uri
-              & focusRing .~ (Focus.focusSetCurrent TextPrompt focusRingPrompt)
-              & history %~ pushHistory
-              & promptDialog
-                .~ Dialog.dialog
-                  (Just (T.unpack promptText))
-                  (Just (1, [("Back", Nothing), ("Submit", Just promptText)]))
-                  32
-          Success content ->
-            let lines =
-                  case content of
-                    GeminiResource pageLines ->
-                      pageLines
-                    UnknownResource mimeType text ->
-                      fmap TextLine (T.lines text)
-             in s & currentURI ?~ uri
-                  & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
-                  & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
-                  & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
-                  & history %~ pushHistory
-                  & cache %~ Map.insert uri (Loaded geminiResponse)
-          other ->
-            -- todo: fixme
-            let bogusMessage =
-                  [ TextLine "welp...",
-                    TextLine (T.pack $ show other)
-                  ]
-             in s & currentURI ?~ uri
-                  & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
-                  & contentList %~ BrickList.listReplace (Vector.fromList bogusMessage) (Just 0)
-                  & focusRing .~ (preservingFocus s focusRingNormal)
-                  & history %~ pushHistory
-                  & cache %~ Map.insert uri (Loaded geminiResponse)
+-- responseToState :: State -> History.Behavior -> GeminiResponse -> State
+-- responseToState s historyBehavior responseData =
+--   let pushHistory v =
+--         case (historyBehavior, s ^. currentURI) of
+--           (History.Push, Just oldUri) -> Vector.snoc v oldUri
+--           _ -> v
+--    in if historyBehavior == Cache
+--         then s & cache %~ Map.insert uri (Loaded geminiResponse)
+--         else case responseData of
+--           Input promptText ->
+--             s & textPrompt .~ Editor.editor TextPrompt (Just 1) ""
+--               & cache %~ Map.insert uri (Loaded geminiResponse)
+--               & currentURI ?~ uri
+--               & focusRing .~ (Focus.focusSetCurrent TextPrompt focusRingPrompt)
+--               & history %~ pushHistory
+--               & promptDialog
+--                 .~ Dialog.dialog
+--                   (Just (T.unpack promptText))
+--                   (Just (1, [("Back", Nothing), ("Submit", Just promptText)]))
+--                   32
+--           Success content ->
+--             let lines =
+--                   case content of
+--                     GeminiResource pageLines ->
+--                       pageLines
+--                     UnknownResource mimeType text ->
+--                       fmap TextLine (T.lines text)
+--              in s & currentURI ?~ uri
+--                   & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
+--                   & contentList %~ BrickList.listReplace (Vector.fromList lines) (Just 0)
+--                   & focusRing .~ (Focus.focusSetCurrent ContentViewport focusRingNormal)
+--                   & history %~ pushHistory
+--                   & cache %~ Map.insert uri (Loaded geminiResponse)
+--           other ->
+--             -- todo: fixme
+--             let bogusMessage =
+--                   [ TextLine "welp...",
+--                     TextLine (T.pack $ show other)
+--                   ]
+--              in s & currentURI ?~ uri
+--                   & urlBar .~ makeUrlEditor (URI.uriToString id uri "")
+--                   & contentList %~ BrickList.listReplace (Vector.fromList bogusMessage) (Just 0)
+--                   & focusRing .~ (preservingFocus s focusRingNormal)
+--                   & history %~ pushHistory
+--                   & cache %~ Map.insert uri (Loaded geminiResponse)
 
 getFocus :: State -> Maybe Name
 getFocus s =
@@ -391,8 +397,8 @@ drawUI s =
 
       drawContent =
         vBox
-          ( [currentPage s & drawLoadable (drawGeminiContent s)]
-              ++ [fill ' ' | not $ Loadable.isReady (currentPage s)]
+          ( [currentPage s & drawPage s]
+              ++ [fill ' ' | not $ isLoading s]
           )
    in [ center $
           border $
@@ -405,14 +411,6 @@ drawUI s =
               ]
       ]
 
-drawLoadable :: (a -> Widget Name) -> Loadable a -> Widget Name
-drawLoadable draw loadable =
-  case loadable of
-    NotStarted -> drawStart
-    Loading -> str "Loading..."
-    Loaded a -> draw a
-    NetErr -> str "Error!"
-
 drawStart =
   let drawLabel =
         str "press " <+> (yellowStr "<return>") <+> str " to start"
@@ -421,23 +419,34 @@ drawStart =
 yellowStr =
   withAttr "yellow" . str
 
-drawGeminiContent :: State -> GeminiResponse -> Widget Name
-drawGeminiContent s response =
-  case response of
-    Success _ ->
-      BrickList.renderList
-        (\highlighted line -> (displayLine s line) <+> str " ")
-        (hasFocus s ContentViewport)
-        (s ^. contentList)
-    Input inputStr ->
-      vBox
-        [ Dialog.renderDialog
-            (s ^. promptDialog)
-            (drawInputEdit s),
-          fill ' '
-        ]
-    resp ->
-      str "Unknown response!" <=> (str $ show resp)
+drawPage :: State -> Page -> Widget Name
+drawPage s page =
+  drawLoadable
+    (page ^. Page.content)
+    ( \case
+        Success _ ->
+          BrickList.renderList
+            (\highlighted line -> (displayLine s line) <+> str " ")
+            (hasFocus s ContentViewport)
+            (s ^. contentList)
+        Input inputStr ->
+          vBox
+            [ Dialog.renderDialog
+                (s ^. promptDialog)
+                (drawInputEdit s),
+              fill ' '
+            ]
+        resp ->
+          str "Unknown response!" <=> (str $ show resp)
+    )
+
+drawLoadable :: Loadable a -> (a -> Widget Name) -> Widget Name
+drawLoadable loadable draw =
+  case loadable of
+    NotStarted -> drawStart
+    Loading -> str "Loading..."
+    Loaded a -> draw a
+    NetErr -> str "Error!"
 
 drawInputEdit s =
   border $
@@ -487,9 +496,12 @@ displayLink s uriOrErr desc =
       drawStatus uri =
         let status =
               case (s ^. cache & Cache.get uri) of
-                Just (Loaded a) -> if isGemErr a then "geminiUriErrored" else "geminiUriLoaded"
-                Just Loading -> "geminiUriLoading"
-                Just NetErr -> "geminiUriErrored"
+                Just page ->
+                  case page ^. Page.content of
+                    Loaded content ->
+                      if isGemErr content then "geminiUriErrored" else "geminiUriLoaded"
+                    Loading -> "geminiUriLoading"
+                    _ -> "geminiUriUnknown"
                 _ -> "geminiUriUnknown"
          in (withAttr status $ str "▲")
 
@@ -498,21 +510,20 @@ displayLink s uriOrErr desc =
 
 drawStatusLine :: State -> Widget Name
 drawStatusLine s =
-  let hist =
-        s ^. history & Vector.toList
+  let histCount =
+        currentTab s ^. Tab.history & History.count
 
       drawHistory =
-        case popHistory s of
-          Left _ ->
-            str "No history"
-          Right (_, lastPage) ->
+        case currentTab s ^. Tab.history & History.pop of
+          (_, Just lastPage) ->
             str $
               "("
-                <> (show $ length hist)
+                <> (show $ histCount)
                 <> ") Last page: "
                 <> show lastPage
                 <> " (backspace)"
-
+          _ ->
+            str "No history"
       drawMime =
         str $ (getMimeType s) <> " "
 
@@ -528,8 +539,8 @@ drawStatusLine s =
    in padRight Max drawHistory <+> drawCacheSize <+> help
 
 getMimeType :: State -> String
-getMimeType s = case currentPage s of
-  Loaded (Success (UnknownResource mimeType txt)) ->
+getMimeType s = case currentPage s & Page.contentMay of
+  Just (Success (UnknownResource mimeType txt)) ->
     T.unpack mimeType
   _ -> "?"
 
@@ -541,7 +552,7 @@ initState :: TChan PageRequest -> TChan KillRequest -> String -> State
 initState requests kill initUri =
   State
     { _tabs = CList.singleton Tab.new,
-      _cache = Map.empty,
+      _cache = Cache.new,
       _requestChan = requests,
       _killChan = kill,
       _urlBar = makeUrlEditor initUri,

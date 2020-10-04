@@ -1,9 +1,11 @@
 module RequestProcessor (start, PageRequest (..), KillRequest (..), PageResponse (..)) where
 
+import Brick.BChan (BChan)
 import qualified Brick.BChan as BChan
 import Client (GeminiResponse)
 import qualified Client
 import Control.Concurrent (ThreadId, forkIO, killThread)
+import Control.Concurrent.STM (TChan)
 import qualified Control.Concurrent.STM as STM
 import Control.Monad (forever)
 import qualified History
@@ -13,12 +15,12 @@ data PageRequest
   = PageRequest URI History.Behavior
 
 data PageResponse
-  = PageResponse GeminiResponse History.Behavior
+  = PageResponse URI GeminiResponse History.Behavior
   | NoPageResponse URI
 
 data KillRequest = KillRequest | KillResponse
 
-start :: IO (STM.TChan PageRequest, STM.TChan KillRequest, BChan.BChan PageResponse)
+start :: IO (TChan PageRequest, TChan KillRequest, BChan PageResponse)
 start = do
   requests <- STM.atomically STM.newTChan
   kill <- STM.atomically STM.newTChan
@@ -30,14 +32,14 @@ multithread :: IO () -> Int -> IO [ThreadId]
 multithread threadBuilder nThreads =
   sequence $ replicate nThreads $ forkIO threadBuilder
 
-process :: STM.TChan PageRequest -> BChan.BChan PageResponse -> IO ()
+process :: TChan PageRequest -> BChan PageResponse -> IO ()
 process requests responses =
   forever $ do
     PageRequest uri hist <- STM.atomically $ STM.readTChan requests
     response <- Client.get uri
     case response of
-      Just r ->
-        BChan.writeBChan responses (PageResponse r hist)
+      Just resp ->
+        BChan.writeBChan responses (PageResponse uri resp hist)
       Nothing ->
         BChan.writeBChan responses (NoPageResponse uri)
 

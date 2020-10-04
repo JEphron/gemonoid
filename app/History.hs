@@ -19,6 +19,9 @@ data History
 empty :: History
 empty = History Vector.empty
 
+count :: History -> Int
+count (History history) = Vector.length history
+
 push :: URI -> History -> History
 push uri (History history) =
   History (Vector.snoc history uri)
@@ -27,6 +30,11 @@ pop :: History -> (History, Maybe URI)
 pop (History history) =
   let (vec, popped) = Utils.pop history
    in (History vec, popped)
+
+pop' :: History -> History
+pop' (History history) =
+  let (vec, popped) = Utils.pop history
+   in History vec
 
 replace :: URI -> History -> History
 replace uri history =
