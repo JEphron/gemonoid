@@ -49,6 +49,15 @@ data Line
   | QuoteLine Text
   deriving (Show)
 
+mapLine :: (Text -> Text) -> Line -> Line
+mapLine fn = \case
+  HeadingLine h t -> HeadingLine h (fn t)
+  TextLine t -> TextLine (fn t)
+  ULLine t -> ULLine (fn t)
+  PreLine t -> PreLine (fn t)
+  QuoteLine t -> QuoteLine (fn t)
+  LinkLine uri desc -> LinkLine uri (fn desc)
+
 data Resource
   = GeminiResource [Line]
   | UnknownResource MimeType Text

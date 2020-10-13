@@ -55,3 +55,4 @@ executables:
     - text-zipper
     - template-haskell
     - stm
+    - data-clist

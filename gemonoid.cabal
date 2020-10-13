@@ -36,8 +36,18 @@ library
 executable gemonoid-exe
   main-is: Main.hs
   other-modules:
+      Banner
+      BlankPage
+      Browser
+      Cache
       Client
+      History
+      Loadable
+      Page
       Raw
+      RequestProcessor
+      Tab
+      Utils
       Paths_gemonoid
   hs-source-dirs:
       app
@@ -49,6 +59,7 @@ executable gemonoid-exe
     , brick
     , bytestring
     , containers
+    , data-clist
     , data-default-class
     , gemonoid
     , microlens-platform

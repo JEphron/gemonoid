@@ -1,4 +1,4 @@
-module RequestProcessor (start, PageRequest (..), KillRequest (..), PageResponse (..)) where
+module RequestProcessor (start, PageRequest (..), Callback, PageResponse (..)) where
 
 import Brick.BChan (BChan)
 import qualified Brick.BChan as BChan
@@ -18,35 +18,25 @@ data PageResponse
   = PageResponse URI GeminiResponse History.Behavior
   | NoPageResponse URI
 
-data KillRequest = KillRequest | KillResponse
+type Callback = PageResponse -> IO ()
 
-start :: IO (TChan PageRequest, TChan KillRequest, BChan PageResponse)
-start = do
+start :: Callback -> IO (TChan PageRequest)
+start respond = do
   requests <- STM.atomically STM.newTChan
-  kill <- STM.atomically STM.newTChan
-  responses <- BChan.newBChan 10
-  multithread (process requests responses) 10
-  return (requests, kill, responses)
+  multithread 10 (process respond requests)
+  return requests
 
-multithread :: IO () -> Int -> IO [ThreadId]
-multithread threadBuilder nThreads =
-  sequence $ replicate nThreads $ forkIO threadBuilder
-
-process :: TChan PageRequest -> BChan PageResponse -> IO ()
-process requests responses =
+process :: Callback -> TChan PageRequest -> IO ()
+process respond requests =
   forever $ do
     PageRequest uri hist <- STM.atomically $ STM.readTChan requests
     response <- Client.get uri
     case response of
       Just resp ->
-        BChan.writeBChan responses (PageResponse uri resp hist)
+        respond (PageResponse uri resp hist)
       Nothing ->
-        BChan.writeBChan responses (NoPageResponse uri)
+        respond (NoPageResponse uri)
 
---supervisor :: IO () -> Int -> STM.TChan KillRequest -> IO ()
---supervisor threadBuilder nThreads kill =
---  forever $ do
---    tids <- multithread threadBuilder nThreads
---    STM.atomically $ STM.readTChan kill
---    mapM_ killThread tids
---    STM.atomically $ STM.writeTChan kill KillResponse
+multithread :: Int -> IO () -> IO [ThreadId]
+multithread nThreads threadBuilder =
+  sequence $ replicate nThreads $ forkIO threadBuilder

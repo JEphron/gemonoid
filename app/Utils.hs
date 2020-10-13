@@ -4,6 +4,8 @@ import qualified Control.Exception as E
 import qualified Data.Text as T
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
+import Network.URI (URI)
+import qualified Network.URI as URI
 
 stripString :: String -> String
 stripString =
@@ -31,3 +33,11 @@ tryAny =
 rightToJust :: Either l r -> Maybe r
 rightToJust (Right r) = Just r
 rightToJust (Left l) = Nothing
+
+saneEscapeUri :: String -> String
+saneEscapeUri =
+  URI.escapeURIString URI.isAllowedInURI
+
+setQuery :: URI -> String -> URI
+setQuery uri query =
+  uri {URI.uriQuery = "?" <> saneEscapeUri query}
