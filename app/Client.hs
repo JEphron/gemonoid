@@ -1,11 +1,9 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Client where
 
 import Control.Applicative (liftA2)
-import Control.Category ((>>>))
 import qualified Control.Exception as E
 import Control.Monad (join)
 import qualified Data.ByteString.Char8 as C
@@ -18,16 +16,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8')
 import Data.Text.Encoding.Error (UnicodeException)
-import qualified Data.Text.IO as TIO
 import Lens.Micro.Platform
 import Network.Socket
-import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.TLS as TLS
 import Network.TLS.Extra.Cipher (ciphersuite_default)
 import qualified Network.TLS.SessionManager as TLSSessionManager
 import Network.URI
 import Safe
-import qualified System.Console.ANSI as ANSI
 import System.Timeout
 import System.X509 (getSystemCertificateStore)
 
@@ -143,7 +138,7 @@ getRaw uri =
 
 parseSuccess :: URI -> MimeType -> [Text] -> Content
 parseSuccess uri "text/gemini" lines = GeminiContent $ parseGeminiPage uri lines
-parseSuccess uri mime lines = UnknownContent mime (T.unlines lines)
+parseSuccess _uri mime lines = UnknownContent mime (T.unlines lines)
 
 parseMeta :: Text -> Maybe ((Int, Int), Text)
 parseMeta =
@@ -163,22 +158,26 @@ parseMimeType = headMay . T.splitOn ";" -- ignoring params for now
 parseGeminiPage :: URI -> [Text] -> GeminiPage
 parseGeminiPage uri = GeminiPage . parseLines uri
 
-parseURI_T = parseURI . T.unpack
+parseURIT :: Text -> Maybe URI
+parseURIT = parseURI . T.unpack
 
-isRelativeReference_T = isRelativeReference . T.unpack
+isRelativeReferenceT :: Text -> Bool
+isRelativeReferenceT = isRelativeReference . T.unpack
 
-isAbsoluteURI_T = isAbsoluteURI . T.unpack
+isAbsoluteURIT :: Text -> Bool
+isAbsoluteURIT = isAbsoluteURI . T.unpack
 
-parseRelativeReference_T = parseRelativeReference . T.unpack
+parseRelativeReferenceT :: Text -> Maybe URI
+parseRelativeReferenceT = parseRelativeReference . T.unpack
 
 calcUri :: Text -> URI -> Maybe URI
 calcUri incomingUriStr currentUri
-  | isRelativeReference_T incomingUriStr =
+  | isRelativeReferenceT incomingUriStr =
     liftA2
       relativeTo
-      (parseRelativeReference_T incomingUriStr)
+      (parseRelativeReferenceT incomingUriStr)
       (pure currentUri)
-  | isAbsoluteURI_T incomingUriStr = parseURI_T incomingUriStr
+  | isAbsoluteURIT incomingUriStr = parseURIT incomingUriStr
   | otherwise = Nothing
 
 maybeToEither :: Maybe a -> e -> Either e a
@@ -232,14 +231,14 @@ recvAll ctx =
 
 rightToJust :: Either l r -> Maybe r
 rightToJust (Right r) = Just r
-rightToJust (Left l) = Nothing
+rightToJust (Left _) = Nothing
 
 tryAny :: IO a -> IO (Either E.SomeException a)
 tryAny = E.try
 
 safeGetAddrInfo :: Maybe AddrInfo -> Maybe HostName -> Maybe ServiceName -> IO (Maybe [AddrInfo])
 safeGetAddrInfo addrInfo hostName serviceName =
-  (join . rightToJust)
+  join . rightToJust
     <$> ( tryAny
             . timeout oneSecond
             $ getAddrInfo addrInfo hostName serviceName
@@ -287,8 +286,8 @@ withTLS hostname socket fn =
                 },
             TLS.clientHooks =
               def
-                { TLS.onServerCertificate = \store cache serviceId certChain -> return [],
-                  TLS.onCertificateRequest = \thing -> do
+                { TLS.onServerCertificate = \_store _cache _serviceId _certChain -> return [],
+                  TLS.onCertificateRequest = \_ -> do
                     return Nothing
                 }
           }
